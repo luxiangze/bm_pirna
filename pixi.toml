@@ -2,7 +2,7 @@
 name = "bm_pirna"
 description = "The purpose of this project is to analyze genes related to piRNA synthesis that were identified by screening a whole-genome library of the silkworm, with the aim of elucidating a comprehensive view of piRNA synthesis in the silkworm."
 version = "0.1.0"
-channels = ['conda-forge']
+channels = ["conda-forge", "bioconda"]
 platforms = ['linux-64', 'osx-64', 'osx-arm64', 'win-64']
 
 [dependencies]
@@ -12,6 +12,7 @@ ruff = "*"
 tqdm = "*"
 typer = "*"
 pip = "*"
+ipykernel = ">=7.1.0,<8"
 
 [pypi-dependencies]
 python-dotenv = "*"
