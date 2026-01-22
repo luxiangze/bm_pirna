@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "bm_pirna"
 description = "The purpose of this project is to analyze genes related to piRNA synthesis that were identified by screening a whole-genome library of the silkworm, with the aim of elucidating a comprehensive view of piRNA synthesis in the silkworm."
 version = "0.1.0"
