@@ -1,0 +1,1 @@
+# smRNA-seq analysis module
