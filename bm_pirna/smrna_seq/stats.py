@@ -151,7 +151,7 @@ def write_first_nt_distribution(stats_list: list[SampleStats], output_file: Path
             for nt in ["A", "T", "G", "C"]:
                 count = s.first_nt_counts.get(nt, 0)
                 pct = count / total * 100 if total > 0 else 0
-                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.2f}\n")
+                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.4f}\n")
 
 
 def write_tenth_nt_distribution(stats_list: list[SampleStats], output_file: Path) -> None:
@@ -163,7 +163,7 @@ def write_tenth_nt_distribution(stats_list: list[SampleStats], output_file: Path
             for nt in ["A", "T", "G", "C"]:
                 count = s.tenth_nt_counts.get(nt, 0)
                 pct = count / total * 100 if total > 0 else 0
-                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.2f}\n")
+                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.4f}\n")
 
 
 def write_nt_composition(stats_list: list[SampleStats], output_file: Path) -> None:
@@ -175,7 +175,7 @@ def write_nt_composition(stats_list: list[SampleStats], output_file: Path) -> No
             for nt in ["A", "T", "G", "C"]:
                 count = s.nt_composition.get(nt, 0)
                 pct = count / total * 100 if total > 0 else 0
-                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.2f}\n")
+                f.write(f"{s.sample_name}\t{nt}\t{count}\t{pct:.4f}\n")
 
 
 def write_collapsed_fasta(stats: SampleStats, output_file: Path) -> None:
