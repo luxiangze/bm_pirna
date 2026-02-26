@@ -105,28 +105,29 @@ def calculate_transposon_counts(
     alignments: list[tuple[str, str]],
     read_counts: dict[str, int],
 ) -> dict[str, float]:
-    """Calculate transposon counts with multi-mapping reads split evenly.
+    """Calculate transposon counts with multi-mapping reads assigned randomly.
 
     Args:
         alignments: List of (read_id, transposon_id) tuples
         read_counts: Dict mapping read_id to read count
 
     Returns:
-        Dict mapping transposon_id to fractional count
+        Dict mapping transposon_id to count
     """
-    # Count how many times each read maps
-    read_alignment_count: dict[str, int] = defaultdict(int)
-    for read_id, _ in alignments:
-        read_alignment_count[read_id] += 1
+    import random
 
-    # Assign fractional counts to transposons
-    transposon_counts: dict[str, float] = defaultdict(float)
+    # Group alignments by read_id
+    read_to_transposons: dict[str, list[str]] = defaultdict(list)
     for read_id, transposon_id in alignments:
+        read_to_transposons[read_id].append(transposon_id)
+
+    # Randomly assign each read to one transposon
+    transposon_counts: dict[str, float] = defaultdict(float)
+    for read_id, transposon_list in read_to_transposons.items():
         count = read_counts.get(read_id, 1)
-        num_alignments = read_alignment_count[read_id]
-        # Split count evenly among all alignments
-        fractional_count = count / num_alignments
-        transposon_counts[transposon_id] += fractional_count
+        # Randomly pick one transposon from all alignments
+        chosen_transposon = random.choice(transposon_list)
+        transposon_counts[chosen_transposon] += count
 
     return dict(transposon_counts)
 
@@ -297,7 +298,7 @@ def main(
     calculates RPM using library sizes from fastp summary,
     and computes fold changes based on sample comparisons.
 
-    For multi-mapping reads, counts are split evenly among all alignments.
+    For multi-mapping reads, counts are randomly assigned to one alignment.
 
     Examples:
         python -m bm_pirna.smrna_seq.transposon_rpm collapsed/
