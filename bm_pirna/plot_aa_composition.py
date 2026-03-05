@@ -1,4 +1,5 @@
 from collections import Counter
+import csv
 from pathlib import Path
 
 from loguru import logger
@@ -7,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import typer
 
-from bm_pirna.config import FIGURES_DIR, RAW_DATA_DIR
+from bm_pirna.config import FIGURES_DIR, PROCESSED_DATA_DIR, RAW_DATA_DIR
 
 app = typer.Typer()
 
@@ -113,10 +114,41 @@ def plot_gene(gene: str, species_seqs: dict[str, str], output_dir: Path) -> None
     logger.info(f"Saved: {out_path}")
 
 
+def export_table(genes: dict[str, dict[str, str]], output_dir: Path) -> None:
+    """Export a CSV table with AA counts and fractions for every sequence."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / "aa_composition_table.csv"
+
+    count_cols = [f"{aa}_count" for aa in AMINO_ACIDS]
+    frac_cols = [f"{aa}_frac" for aa in AMINO_ACIDS]
+    header = ["gene", "species", "total_aa"] + count_cols + frac_cols
+
+    with open(out_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for gene, species_seqs in genes.items():
+            for species, seq in species_seqs.items():
+                counts = calc_aa_counts(seq)
+                total = sum(counts.values())
+                fracs = {
+                    aa: (counts[aa] / total if total > 0 else 0.0)
+                    for aa in AMINO_ACIDS
+                }
+                row = (
+                    [gene, species, total]
+                    + [counts[aa] for aa in AMINO_ACIDS]
+                    + [f"{fracs[aa]:.6f}" for aa in AMINO_ACIDS]
+                )
+                writer.writerow(row)
+
+    logger.info(f"Saved table: {out_path}")
+
+
 @app.command()
 def main(
     input_path: Path = RAW_DATA_DIR / "Intersection_genes.fasta",
     output_dir: Path = FIGURES_DIR,
+    table_dir: Path = PROCESSED_DATA_DIR,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,6 +160,7 @@ def main(
         logger.info(f"Plotting gene: {gene} ({len(species_seqs)} species)")
         plot_gene(gene, species_seqs, output_dir)
 
+    export_table(genes, table_dir)
     logger.success("All plots done.")
 
 
