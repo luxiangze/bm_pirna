@@ -146,7 +146,7 @@ def export_table(genes: dict[str, dict[str, str]], output_dir: Path) -> None:
 
 @app.command()
 def main(
-    input_path: Path = RAW_DATA_DIR / "Intersection_genes.fasta",
+    input_path: Path = RAW_DATA_DIR / "CRM1.fasta",
     output_dir: Path = FIGURES_DIR,
     table_dir: Path = PROCESSED_DATA_DIR,
 ) -> None:
