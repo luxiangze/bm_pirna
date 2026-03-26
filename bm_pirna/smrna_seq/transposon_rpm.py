@@ -13,7 +13,6 @@ from bm_pirna.config import (
     EXTERNAL_DATA_DIR,
     INTERIM_DATA_DIR,
     PROCESSED_DATA_DIR,
-    REPORTS_DIR,
 )
 
 app = typer.Typer()
@@ -146,10 +145,10 @@ def calculate_rpm(counts: dict[str, float], library_size: int) -> dict[str, floa
     return {te_id: count * rpm_factor for te_id, count in counts.items()}
 
 
-def load_library_sizes(cutadapt_summary: Path) -> dict[str, int]:
-    """Load library sizes from cutadapt summary TSV."""
-    df = pd.read_csv(cutadapt_summary, sep="\t")
-    return dict(zip(df["sample"], df["reads_written"]))
+def load_library_sizes(read_counts_file: Path) -> dict[str, int]:
+    """Load library sizes from filtered_read_counts TSV."""
+    df = pd.read_csv(read_counts_file, sep="\t")
+    return dict(zip(df["sample"], df["filtered_reads"]))
 
 
 def load_sample_map(sample_map_file: Path) -> list[tuple[str, str]]:
@@ -251,10 +250,10 @@ def main(
         help="Path to bowtie index (without extension)",
     ),
     cutadapt_summary: Path = typer.Option(
-        REPORTS_DIR / "cutadapt/cutadapt_summary.tsv",
+        INTERIM_DATA_DIR / "smRNA-seq_20260321/structure_rna_filtered/filtered_read_counts.tsv",
         "--cutadapt-summary",
         "-c",
-        help="Path to cutadapt summary TSV file",
+        help="Path to filtered_read_counts TSV file (filtered_reads column used as normalization factor)",
     ),
     sample_map: Path = typer.Option(
         EXTERNAL_DATA_DIR / "sample_map.csv",
