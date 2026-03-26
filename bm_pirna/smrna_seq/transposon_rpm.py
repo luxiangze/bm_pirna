@@ -151,6 +151,70 @@ def load_library_sizes(read_counts_file: Path) -> dict[str, int]:
     return dict(zip(df["sample"], df["filtered_reads"]))
 
 
+def load_te_class(te_class_file: Path) -> dict[str, str]:
+    """Load TE class mapping from te_class.csv.
+
+    Args:
+        te_class_file: Path to CSV with 'accession' and 'prediction' columns
+
+    Returns:
+        Dict mapping te_id to prediction (e.g., 'LTR/Gypsy')
+    """
+    df = pd.read_csv(te_class_file)
+    return dict(zip(df["accession"], df["prediction"]))
+
+
+def aggregate_rpm_by_class(
+    sample_rpm: dict[str, dict[str, float]],
+    te_class_map: dict[str, str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate RPM by TE class (top-level and sub-class).
+
+    Args:
+        sample_rpm: Dict mapping sample_name to {te_id: rpm}
+        te_class_map: Dict mapping te_id to prediction string
+
+    Returns:
+        Tuple of (top_class_df, sub_class_df) DataFrames
+    """
+    all_samples = list(sample_rpm.keys())
+
+    # Collect all TE IDs across samples
+    all_tes: set[str] = set()
+    for rpm in sample_rpm.values():
+        all_tes.update(rpm.keys())
+
+    # Build sub-class aggregation: {sub_class: {sample: rpm_sum}}
+    sub_class_sums: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for te_id in all_tes:
+        sub_class = te_class_map.get(te_id, "Unknown")
+        for sample, rpm in sample_rpm.items():
+            sub_class_sums[sub_class][sample] += rpm.get(te_id, 0.0)
+
+    sub_class_df = pd.DataFrame(
+        [
+            {"te_class": cls, **sums}
+            for cls, sums in sorted(sub_class_sums.items())
+        ]
+    )[["te_class"] + all_samples]
+
+    # Build top-level aggregation from sub-class sums
+    top_class_sums: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for sub_class, sums in sub_class_sums.items():
+        top_class = sub_class.split("/")[0]
+        for sample, val in sums.items():
+            top_class_sums[top_class][sample] += val
+
+    top_class_df = pd.DataFrame(
+        [
+            {"te_class": cls, **sums}
+            for cls, sums in sorted(top_class_sums.items())
+        ]
+    )[["te_class"] + all_samples]
+
+    return top_class_df, sub_class_df
+
+
 def load_sample_map(sample_map_file: Path) -> list[tuple[str, str]]:
     """Load sample comparison pairs from sample map CSV."""
     df = pd.read_csv(sample_map_file)
@@ -260,6 +324,12 @@ def main(
         "--sample-map",
         "-s",
         help="Path to sample map CSV file",
+    ),
+    te_class: Path = typer.Option(
+        EXTERNAL_DATA_DIR / "te_class.csv",
+        "--te-class",
+        "-C",
+        help="Path to TE class CSV file (accession, prediction columns)",
     ),
     output_dir: Path = typer.Option(
         PROCESSED_DATA_DIR / "transposon_rpm_analysis",
@@ -377,6 +447,20 @@ def main(
     rpm_file = output_dir / "transposon_rpm_matrix.tsv"
     rpm_df.to_csv(rpm_file, sep="\t", index=False)
     logger.info(f"Saved RPM matrix: {rpm_file}")
+
+    # Aggregate RPM by TE class
+    if te_class.exists():
+        te_class_map = load_te_class(te_class)
+        logger.info(f"Loaded TE class map: {len(te_class_map)} entries")
+        top_class_df, sub_class_df = aggregate_rpm_by_class(sample_rpm, te_class_map)
+        top_class_file = output_dir / "te_top_class_rpm_matrix.tsv"
+        sub_class_file = output_dir / "te_sub_class_rpm_matrix.tsv"
+        top_class_df.to_csv(top_class_file, sep="\t", index=False)
+        sub_class_df.to_csv(sub_class_file, sep="\t", index=False)
+        logger.info(f"Saved top-level class RPM matrix: {top_class_file}")
+        logger.info(f"Saved sub-class RPM matrix: {sub_class_file}")
+    else:
+        logger.warning(f"TE class file not found, skipping class RPM: {te_class}")
 
     # Also save raw counts matrix
     count_data = {"transposon_ID": all_tes}
