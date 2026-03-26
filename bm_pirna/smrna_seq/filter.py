@@ -159,6 +159,32 @@ def filter_single_file(
     logger.success(f"Filter complete: {output_file}")
 
 
+def run_seqkit_stats(fastq_file: Path) -> int:
+    """Count reads using seqkit stats (fast, supports gzip)."""
+    cmd = ["seqkit", "stats", "-T", str(fastq_file)]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    lines = result.stdout.strip().split("\n")
+    if len(lines) < 2:
+        raise ValueError(f"Unexpected seqkit stats output for {fastq_file}")
+    fields = lines[1].split("\t")
+    num_seqs = int(fields[3])
+    return num_seqs
+
+
+def write_read_counts(
+    read_counts: list[tuple[str, int, int, float]], output_file: Path
+) -> None:
+    """Write per-sample read counts with filtering stats to a TSV file."""
+    with open(output_file, "w") as f:
+        f.write("sample\tinput_reads\tfiltered_reads\tretained_pct\n")
+        for sample_name, input_reads, filtered_reads, retained_pct in sorted(
+            read_counts, key=lambda x: x[0]
+        ):
+            f.write(
+                f"{sample_name}\t{input_reads}\t{filtered_reads}\t{retained_pct:.2f}\n"
+            )
+
+
 @app.command()
 def main(
     input_path: Path = typer.Argument(
@@ -250,6 +276,7 @@ def main(
 
     processed_count = 0
     skipped_count = 0
+    read_counts: list[tuple[str, int, int, float]] = []
 
     for fastq_file in fastq_files:
         sample_name = fastq_file.stem.split(".")[0]
@@ -259,9 +286,25 @@ def main(
         if not force and output_file.exists():
             logger.info(f"⏭️ Skipping {sample_name} (output exists)")
             skipped_count += 1
+            # Try to collect stats for skipped samples if input file is accessible
+            if fastq_file.exists():
+                try:
+                    input_reads = run_seqkit_stats(fastq_file)
+                    filtered_reads = run_seqkit_stats(output_file)
+                    retained_pct = (filtered_reads / input_reads * 100) if input_reads > 0 else 0
+                    read_counts.append((sample_name, input_reads, filtered_reads, retained_pct))
+                    logger.info(
+                        f"[stats] {sample_name}: {input_reads:,} → {filtered_reads:,} "
+                        f"({retained_pct:.2f}%)"
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not collect stats for {sample_name}: {e}")
             continue
 
         try:
+            # Count input reads before filtering
+            input_reads = run_seqkit_stats(fastq_file)
+
             filter_single_file(
                 input_file=fastq_file,
                 output_file=output_file,
@@ -271,9 +314,23 @@ def main(
                 mismatches=mismatches,
             )
             processed_count += 1
+
+            # Count filtered reads
+            filtered_reads = run_seqkit_stats(output_file)
+            retained_pct = (filtered_reads / input_reads * 100) if input_reads > 0 else 0
+            read_counts.append((sample_name, input_reads, filtered_reads, retained_pct))
+            logger.info(
+                f"[stats] {sample_name}: {input_reads:,} → {filtered_reads:,} "
+                f"({retained_pct:.2f}%)"
+            )
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to process {fastq_file.name}: {e.stderr}")
             raise typer.Exit(1)
+
+    if read_counts:
+        counts_file = output_dir / "filtered_read_counts.tsv"
+        write_read_counts(read_counts, counts_file)
+        logger.success(f"Read counts written to: {counts_file}")
 
     logger.info(f"Processed: {processed_count}, Skipped: {skipped_count}")
     logger.success(f"All filtering complete. Output: {output_dir}")
