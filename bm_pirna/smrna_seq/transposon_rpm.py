@@ -104,7 +104,7 @@ def calculate_transposon_counts(
     alignments: list[tuple[str, str]],
     read_counts: dict[str, int],
 ) -> dict[str, float]:
-    """Calculate transposon counts with multi-mapping reads assigned randomly.
+    """Calculate transposon counts with multi-mapping reads split fractionally.
 
     Args:
         alignments: List of (read_id, transposon_id) tuples
@@ -113,20 +113,18 @@ def calculate_transposon_counts(
     Returns:
         Dict mapping transposon_id to count
     """
-    import random
-
     # Group alignments by read_id
     read_to_transposons: dict[str, list[str]] = defaultdict(list)
     for read_id, transposon_id in alignments:
         read_to_transposons[read_id].append(transposon_id)
 
-    # Randomly assign each read to one transposon
+    # Fractionally assign each read's count across all hit transposons
     transposon_counts: dict[str, float] = defaultdict(float)
     for read_id, transposon_list in read_to_transposons.items():
         count = read_counts.get(read_id, 1)
-        # Randomly pick one transposon from all alignments
-        chosen_transposon = random.choice(transposon_list)
-        transposon_counts[chosen_transposon] += count
+        share = count / len(transposon_list)
+        for te in transposon_list:
+            transposon_counts[te] += share
 
     return dict(transposon_counts)
 
