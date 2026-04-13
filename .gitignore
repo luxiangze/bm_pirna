@@ -5,7 +5,8 @@
 /reports/
 
 # workflow
-/workflow/
+/workflow/*
+!workflow/rnasplicing/
 
 
 # Mac OS-specific storage files
