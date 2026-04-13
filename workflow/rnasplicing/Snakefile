@@ -1,0 +1,257 @@
+# RNA splicing multi-group analysis workflow configuration file
+import csv
+
+configfile: "config.json"
+
+# Load sample information from samplesheet.csv
+def load_samplesheet(path):
+    samples = {}
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            samples[row['sample']] = {'fastq_1': row['fastq_1'], 'fastq_2': row['fastq_2']}
+    return samples
+
+SAMPLESHEET = load_samplesheet(config['samplesheet'])
+SAMPLES = list(SAMPLESHEET.keys())
+GROUPS = list(config['samples'].keys())
+COMPARISONS = [f"comparison_{i+1}_{g1}_vs_{g2}" for i, (g1, g2) in enumerate(config['comparisons'])]
+
+# rMATS event types and statistical modes
+EVENTS = ["A3SS", "A5SS", "MXE", "RI", "SE"]
+JCS = ["JC", "JCEC"]
+
+# Define output files
+BAM_FILES = expand("star/{sample}/Aligned.sortedByCoord.out.bam", sample=SAMPLES)
+GROUP_FILES = expand("groups/{group}.txt", group=GROUPS)
+COMPARISON_INDEX = "groups/comparison_index.txt"
+
+# Use the merged GTF for rMATS if extra_gtf is configured
+EXTRA_GTF = config.get('extra_gtf') or None
+MERGED_GTF = "genome/merged.gtf" if EXTRA_GTF else config['genome_gtf']
+
+# piRNA cluster GTF for region-level quantification (optional branch)
+CLUSTER_GTF = config.get('cluster_gtf') or None
+
+# Top-level rule - final output
+rule all:
+    input:
+        expand("results/{comparison}/summary.txt", comparison=COMPARISONS),
+        "results/tpm/tpm_matrix.tsv",
+        *(["results/cluster_counts.txt"] if CLUSTER_GTF else [])
+
+# Merge GTF files only when extra_gtf is configured
+if EXTRA_GTF:
+    rule merge_gtf:
+        input:
+            gtf1 = config['genome_gtf'],
+            gtf2 = EXTRA_GTF
+        output:
+            merged = "genome/merged.gtf"
+        log:
+            "logs/merge_gtf.log"
+        shell:
+            "cat {input.gtf1} {input.gtf2} > {output.merged} 2> {log}"
+
+# Create workflow directories
+rule create_dirs:
+    output:
+        flag = "dirs_created.flag"
+    shell:
+        "mkdir -p star groups logs rmats results/plots && touch {output.flag}"
+
+# Convert s3://bucket/path to an mc alias path, e.g. minio/bucket/path
+def s3_to_mc(url, alias):
+    return alias + "/" + url.removeprefix("s3://")
+
+# Download FASTQ files from S3
+rule download_fastq:
+    output:
+        fastq1 = temp("fastq/{sample}_R1.fastq.gz"),
+        fastq2 = temp("fastq/{sample}_R2.fastq.gz")
+    params:
+        url1 = lambda wc: s3_to_mc(SAMPLESHEET[wc.sample]['fastq_1'], config['mc_alias']),
+        url2 = lambda wc: s3_to_mc(SAMPLESHEET[wc.sample]['fastq_2'], config['mc_alias'])
+    log:
+        "logs/download/{sample}.log"
+    shell:
+        "mkdir -p fastq logs/download && "
+        "mc cp {params.url1} {output.fastq1} 2>> {log} && "
+        "mc cp {params.url2} {output.fastq2} 2>> {log}"
+
+# Build the genome index
+rule index_genome:
+    input:
+        fa = config['genome_fa'],
+        gtf = config['genome_gtf'],
+        dirs = rules.create_dirs.output.flag
+    params:
+        outdir = 'genome/STARindex',
+        threads = config.get('star_threads', 4),
+        overhang = config.get('read_length', 150) - 1
+    output:
+        directory('genome/STARindex')
+    log:
+        "logs/star_index.log"
+    shell:
+        'mkdir -p {params.outdir} && '
+        'STAR --runThreadN {params.threads} '
+        '--runMode genomeGenerate '
+        '--genomeDir {params.outdir} '
+        '--genomeFastaFiles {input.fa} '
+        '--sjdbGTFfile {input.gtf} '
+        '--sjdbOverhang {params.overhang} '
+        '--genomeSAindexNbases 13 '
+        '2> {log}'
+
+# Align samples to the reference genome
+rule align:
+    input:
+        fastq1 = "fastq/{sample}_R1.fastq.gz",
+        fastq2 = "fastq/{sample}_R2.fastq.gz",
+        index = rules.index_genome.output
+    output:
+        bam = "star/{sample}/Aligned.sortedByCoord.out.bam"
+    params:
+        outdir = "star/{sample}",
+        threads = config.get('star_threads', 4)
+    log:
+        "logs/star/{sample}.log"
+    shell:
+        "mkdir -p {params.outdir} logs/star && "
+        "STAR "
+        "--runThreadN {params.threads} "
+        "--genomeDir {input.index} "
+        "--readFilesIn {input.fastq1} {input.fastq2} "
+        "--readFilesCommand zcat "
+        "--outFileNamePrefix {params.outdir}/ "
+        "--outSAMtype BAM SortedByCoordinate "
+        "--alignEndsType EndToEnd "
+        "2> {log}"
+
+# Group samples for downstream analysis
+rule group_samples:
+    input:
+        config = "config.json",
+        bams = BAM_FILES,
+        dirs = rules.create_dirs.output.flag
+    output:
+        comparison_index = COMPARISON_INDEX,
+        group_files = GROUP_FILES
+    params:
+        out_dir = "groups",
+        bam_dir = "star",
+        config_path = "config.json"
+    log:
+        "logs/group_samples.log"
+    shell:
+        "python scripts/group_files.py "
+        "--bam-dir {params.bam_dir} "
+        "--config {params.config_path} "
+        "--output-dir {params.out_dir} "
+        "2> {log}"
+
+# Run rMATS for each group comparison
+rule analyse_splicing:
+    input:
+        comparison_index = COMPARISON_INDEX,
+        group_files = GROUP_FILES,
+        gtf = MERGED_GTF
+    output:
+        rmats_output = expand("rmats/{{comparison}}/{event}.MATS.{jc}.txt", event=EVENTS, jc=JCS)
+    params:
+        outdir = "rmats/{comparison}",
+        tmp = "rmats/{comparison}/tmp",
+        read_length = config.get('read_length', 150),
+        rmats_type = config.get('rmats_type', "paired"),
+        rmats_lib = config.get('rmats_lib', "fr-firststrand")
+    log:
+        "logs/rmats/{comparison}.log"
+    shell:
+        "mkdir -p {params.outdir} {params.tmp} logs/rmats && "
+        "GROUP1=$(grep -w '{wildcards.comparison}' {input.comparison_index} | cut -f2) && "
+        "GROUP2=$(grep -w '{wildcards.comparison}' {input.comparison_index} | cut -f3) && "
+        "rmats.py "
+        "--b1 groups/$GROUP1.txt "
+        "--b2 groups/$GROUP2.txt "
+        "--gtf {input.gtf} "
+        "-t {params.rmats_type} "
+        "--variable-read-length "
+        "--readLength {params.read_length} "
+        "--libType {params.rmats_lib} "
+        "--od {params.outdir} "
+        "--tmp {params.tmp} "
+        "2> {log}"
+
+# Generate the summary report for each comparison
+rule create_summary:
+    input:
+        rmats_results = expand("rmats/{{comparison}}/{event}.MATS.{jc}.txt", event=EVENTS, jc=JCS)
+    output:
+        summary = "results/{comparison}/summary.txt",
+        plot = "results/{comparison}/volcano.pdf"
+    params:
+        script = "scripts/summarize_splicing.py",
+        rmats_dir = "rmats/{comparison}",
+        fdr = config.get('fdr_threshold', 0.05)
+    log:
+        "logs/summary/{comparison}.log"
+    shell:
+        "mkdir -p results/{wildcards.comparison} logs/summary && "
+        "python {params.script} "
+        "--input-dir {params.rmats_dir} "
+        "--output-file {output.summary} "
+        "--plot-file {output.plot} "
+        "--fdr {params.fdr} "
+        "2> {log}"
+
+# Calculate gene-level TPM for all samples
+rule calc_tpm:
+    input:
+        bams = BAM_FILES,
+        gtf  = MERGED_GTF
+    output:
+        tpm = "results/tpm/tpm_matrix.tsv"
+    params:
+        script    = "scripts/calc_tpm.py",
+        bam_dir   = "star",
+        out_dir   = "results/tpm",
+        threads   = config.get('star_threads', 4),
+        strand    = config.get('tpm_strand', 2)
+    log:
+        "logs/tpm.log"
+    shell:
+        "python {params.script} "
+        "--bam-dir {params.bam_dir} "
+        "--gtf {input.gtf} "
+        "--output-dir {params.out_dir} "
+        "--threads {params.threads} "
+        "--strand {params.strand} "
+        "2> {log}"
+
+
+# Quantify piRNA cluster expression across all samples (optional branch)
+if CLUSTER_GTF:
+    rule quantify_clusters:
+        input:
+            bams = BAM_FILES,
+            gtf  = CLUSTER_GTF
+        output:
+            counts = "results/cluster_counts.txt"
+        params:
+            threads   = config.get('star_threads', 4),
+            feature   = "piRNA_cluster",
+            attr      = "gene_id",
+            strandness = 0   # 0=unstranded, 1=stranded, 2=reversely stranded
+        log:
+            "logs/cluster_counts.log"
+        shell:
+            "featureCounts "
+            "-T {params.threads} "
+            "-p "
+            "-t {params.feature} "
+            "-g {params.attr} "
+            "-s {params.strandness} "
+            "-a {input.gtf} "
+            "-o {output.counts} "
+            "{input.bams} "
+            "2> {log}"

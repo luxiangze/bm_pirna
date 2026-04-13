@@ -1,0 +1,19 @@
+{
+    "samplesheet": "samplesheet.csv",
+    "genome_fa": "genome/genomic_chr.fa",
+    "genome_gtf": "genome/genomic_chr.gtf",
+    "extra_gtf": "",
+    "cluster_gtf": "genome/p50ma_Early-Embryo_piCs_chr_std.gtf",
+    "mc_alias": "rustfs",
+    "samples": {
+        "control": ["CONTROL_REP1", "CONTROL_REP2"],
+        "sugp1": ["SUGP1_REP1", "SUGP1_REP2"]
+    },
+    "comparisons": [
+        ["control", "sugp1"]
+    ],
+    "read_length": 150,
+    "star_threads": 4,
+    "rmats_type": "paired",
+    "rmats_lib": "fr-firststrand"
+}
