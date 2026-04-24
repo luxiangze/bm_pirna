@@ -3,7 +3,7 @@
 #' This script generates elegant combined comparison plots for nucleotide distribution at 1st and 10th positions.
 #' Each pair from sample_map.csv generates separate modern and aesthetically pleasing comparison plots.
 #'
-#' @author Claude
+#' @author Yongkang Guo
 #' @date 2025-01-23
 
 # Load required packages

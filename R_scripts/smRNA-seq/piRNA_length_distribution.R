@@ -4,7 +4,7 @@
 #' Each pair from sample_map.csv generates a separate comparison plot.
 #' Reads are normalized using RPM (Reads Per Million) based on filtered_reads from filtered_read_counts.tsv.
 #'
-#' @author Claude
+#' @author Yongkang Guo
 #' @date 2025-01-23
 
 # Load required packages
