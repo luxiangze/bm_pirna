@@ -313,7 +313,7 @@ def main(
     ),
     cutadapt_summary: Path = typer.Option(
         INTERIM_DATA_DIR / "smRNA-seq_20260321/structure_rna_filtered/filtered_read_counts.tsv",
-        "--cutadapt-summary",
+        "--filtered-read-counts",
         "-c",
         help="Path to filtered_read_counts TSV file (filtered_reads column used as normalization factor)",
     ),
