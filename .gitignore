@@ -7,6 +7,9 @@
 # workflow
 /workflow/*
 !workflow/rnasplicing/
+!workflow/RNA-seq_workflow/
+workflow/RNA-seq_workflow/*
+!workflow/RNA-seq_workflow/nf-params.json
 
 
 # Mac OS-specific storage files
