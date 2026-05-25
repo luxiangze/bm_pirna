@@ -15,12 +15,50 @@ sig_df   <- read.table("data/output/sig_splicing_genes_annotated.tsv",
 sig_gids <- as.character(sig_df$gene_id)  # GID: plain integer strings in org.Bmori.eg.db
 cat("Significant splicing genes:", length(sig_gids), "\n")
 
+normalize_gene_ids <- function(x) {
+  sub("\\.0$", "", as.character(x))
+}
+
+make_lookup <- function(keys, values) {
+  keys <- normalize_gene_ids(keys)
+  values <- as.character(values)
+  keep <- !is.na(keys) & nzchar(keys) & !duplicated(keys)
+  setNames(values[keep], keys[keep])
+}
+
+split_gene_ids <- function(s) {
+  if (is.na(s) || !nzchar(s)) return(character())
+  trimws(strsplit(as.character(s), "/", fixed = TRUE)[[1]])
+}
+
+collapse_lookup <- function(tokens, lookup, fallback = tokens) {
+  if (length(tokens) == 0) return("")
+  values <- unname(lookup[tokens])
+  missing <- is.na(values) | !nzchar(values)
+  values[missing] <- fallback[missing]
+  paste(values, collapse = "/")
+}
+
+add_gene_columns <- function(df) {
+  if (nrow(df) == 0 || !"geneID" %in% colnames(df)) return(df)
+  token_rows <- lapply(df$geneID, function(s) normalize_gene_ids(split_gene_ids(s)))
+  df$source_gene_ids <- vapply(token_rows, paste, character(1), collapse = "/")
+  df$gene_symbols <- vapply(token_rows, collapse_lookup, character(1),
+                            lookup = GID_TO_SYMBOL)
+  df$gene_descriptions <- vapply(token_rows, collapse_lookup, character(1),
+                                 lookup = GID_TO_DESCRIPTION)
+  df
+}
+
+GID_TO_SYMBOL <- make_lookup(sig_df$gene_id, sig_df$gene_name)
+GID_TO_DESCRIPTION <- make_lookup(sig_df$gene_id, sig_df$description)
+
 # ---- 2. Build gene2GO mapping from OrgDb ----
 all_gids <- keys(org.Bmori.eg.db, keytype = "GID")
-gene2go  <- select(org.Bmori.eg.db,
-                   keys    = all_gids,
-                   keytype = "GID",
-                   columns = c("GO", "ONTOLOGY"))
+gene2go  <- AnnotationDbi::select(org.Bmori.eg.db,
+                                  keys    = all_gids,
+                                  keytype = "GID",
+                                  columns = c("GO", "ONTOLOGY"))
 gene2go  <- gene2go[!is.na(gene2go$GO), ]
 
 # Build term2gene + term2name for a given ontology
@@ -69,6 +107,7 @@ dir.create("graphs/enrichment",      showWarnings = FALSE, recursive = TRUE)
 
 save_tsv <- function(res, name) {
   df <- as.data.frame(res)
+  df <- add_gene_columns(df)
   if (nrow(df) > 0) {
     write.table(df, paste0("data/output/enrichment/", name, ".tsv"),
                 sep = "\t", row.names = FALSE, quote = FALSE)

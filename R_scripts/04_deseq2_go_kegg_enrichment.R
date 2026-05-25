@@ -11,7 +11,7 @@ library(org.Bmori.eg.db)
 
 # ---- 1. Load and filter DESeq2 results ----
 deseq_df <- read.table(
-  "data/rnadiff_results/tables/differential/condition_control_treated.deseq2.results.tsv",
+  "data/rnadiff_results/tables/differential/condition_control_treated.deseq2.results.txt",
   header = TRUE, sep = "\t"
 )
 
@@ -20,20 +20,56 @@ sig_df <- deseq_df |>
 
 cat("DEGs (pvalue<0.05, |lfc|>1):", nrow(sig_df), "\n")
 
+normalize_gene_ids <- function(x) {
+  sub("\\.0$", "", as.character(x))
+}
+
+make_lookup <- function(keys, values) {
+  keys <- normalize_gene_ids(keys)
+  values <- as.character(values)
+  keep <- !is.na(keys) & nzchar(keys) & !duplicated(keys)
+  setNames(values[keep], keys[keep])
+}
+
+split_gene_ids <- function(s) {
+  if (is.na(s) || !nzchar(s)) return(character())
+  trimws(strsplit(as.character(s), "/", fixed = TRUE)[[1]])
+}
+
+collapse_lookup <- function(tokens, lookup, fallback = tokens) {
+  if (length(tokens) == 0) return("")
+  values <- unname(lookup[tokens])
+  missing <- is.na(values) | !nzchar(values)
+  values[missing] <- fallback[missing]
+  paste(values, collapse = "/")
+}
+
+add_gene_columns <- function(df) {
+  if (nrow(df) == 0 || !"geneID" %in% colnames(df)) return(df)
+  token_rows <- lapply(df$geneID, function(s) normalize_gene_ids(split_gene_ids(s)))
+  df$source_gene_ids <- vapply(token_rows, paste, character(1), collapse = "/")
+  df$gene_symbols <- vapply(token_rows, collapse_lookup, character(1),
+                            lookup = GID_TO_SYMBOL)
+  df$gene_descriptions <- vapply(token_rows, collapse_lookup, character(1),
+                                 lookup = GID_TO_DESCRIPTION)
+  df
+}
+
 # Convert SYMBOL -> GID (required by org.Bmori.eg.db and enrichKEGG)
 id_map <- bitr(sig_df$gene_id,
-               fromType = "Symbol",
+               fromType = "SYMBOL",
                toType   = "GID",
                OrgDb    = org.Bmori.eg.db)
+id_map$GID <- normalize_gene_ids(id_map$GID)
 sig_gids <- unique(id_map$GID)
 cat("Mapped GIDs:", length(sig_gids), "\n")
 
 # ---- 2. Build gene2GO mapping from OrgDb ----
 all_gids <- keys(org.Bmori.eg.db, keytype = "GID")
-gene2go  <- select(org.Bmori.eg.db,
-                   keys    = all_gids,
-                   keytype = "GID",
-                   columns = c("GO", "ONTOLOGY"))
+gene2go  <- AnnotationDbi::select(org.Bmori.eg.db,
+                                  keys    = all_gids,
+                                  keytype = "GID",
+                                  columns = c("GO", "ONTOLOGY"))
 gene2go  <- gene2go[!is.na(gene2go$GO), ]
 
 # Build term2gene + term2name for a given ontology
@@ -79,8 +115,8 @@ kegg_res <- enrichKEGG(
 )
 
 # ---- 4. Annotated DEG table ----
-# Step 1: query GENENAME from OrgDb for genes with a valid Symbol mapping
-orgdb_sym  <- keys(org.Bmori.eg.db, keytype = "Symbol")
+# Step 1: query GENENAME from OrgDb for genes with a valid SYMBOL mapping
+orgdb_sym  <- keys(org.Bmori.eg.db, keytype = "SYMBOL")
 has_symbol <- sig_df$gene_id %in% orgdb_sym
 
 orgdb_anno <- data.frame(gene_id = character(), description = character(),
@@ -89,11 +125,11 @@ if (any(has_symbol)) {
   raw <- suppressMessages(
     AnnotationDbi::select(org.Bmori.eg.db,
                           keys    = sig_df$gene_id[has_symbol],
-                          keytype = "Symbol",
+                          keytype = "SYMBOL",
                           columns = "GENENAME")
   )
   # keep first hit per gene
-  orgdb_anno <- raw[!duplicated(raw$Symbol), c("Symbol", "GENENAME")]
+  orgdb_anno <- raw[!duplicated(raw$SYMBOL), c("SYMBOL", "GENENAME")]
   colnames(orgdb_anno) <- c("gene_id", "description")
 }
 
@@ -116,12 +152,21 @@ deg_anno <- sig_df |>
   left_join(desc_df, by = "gene_id") |>
   dplyr::select(gene_id, description, baseMean, log2FoldChange, lfcSE, pvalue, padj)
 
+id_map_unique <- id_map[!duplicated(id_map$GID), ]
+symbol_to_description <- make_lookup(deg_anno$gene_id, deg_anno$description)
+GID_TO_SYMBOL <- make_lookup(id_map_unique$GID, id_map_unique$SYMBOL)
+GID_TO_DESCRIPTION <- make_lookup(
+  id_map_unique$GID,
+  unname(symbol_to_description[as.character(id_map_unique$SYMBOL)])
+)
+
 # ---- 5. Save TSV ----
 dir.create("data/output/enrichment_deseq2", showWarnings = FALSE, recursive = TRUE)
 dir.create("graphs/enrichment_deseq2",      showWarnings = FALSE, recursive = TRUE)
 
 save_tsv <- function(res, name) {
   df <- as.data.frame(res)
+  df <- add_gene_columns(df)
   if (nrow(df) > 0) {
     write.table(df, paste0("data/output/enrichment_deseq2/", name, ".tsv"),
                 sep = "\t", row.names = FALSE, quote = FALSE)
