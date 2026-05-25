@@ -10,6 +10,9 @@
 !workflow/RNA-seq_workflow/
 workflow/RNA-seq_workflow/*
 !workflow/RNA-seq_workflow/nf-params.json
+!workflow/RNAdiff_workflow_ncbi_20260311/
+workflow/RNAdiff_workflow_ncbi_20260311/*
+!workflow/RNAdiff_workflow_ncbi_20260311/nf-params.json
 
 
 # Mac OS-specific storage files and temporary files
