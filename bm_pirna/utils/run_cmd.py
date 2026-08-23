@@ -1,6 +1,8 @@
 from pathlib import Path
 import subprocess
 
+from bm_pirna.config import PROJ_ROOT
+
 
 def run_cmd(cmd: str, outputs: list[Path], force: bool = False):
     for o in outputs:
@@ -10,4 +12,4 @@ def run_cmd(cmd: str, outputs: list[Path], force: bool = False):
         else:
             o.parent.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(cmd, shell=True, check=True)
+    subprocess.run(cmd, shell=True, check=True, cwd=PROJ_ROOT)
