@@ -1,16 +1,22 @@
 # Build a custom OrgDb for Bombyx mori from NCBI GAF annotation
-# Input:  data/bm_ncbi_gene_ontology.gaf
-# Output: data/org.Bmori.eg.db_<version>.tar.gz (re-installed automatically)
+# Input:  data/external/bm_ncbi/GCF_030269925.1-RS_2024_01_gene_ontology.gaf
+# Output: data/external/bm_ncbi/org.Bmori.eg.db_<version>.tar.gz
+library(here)
 library(AnnotationForge)
 library(GO.db)
 library(dplyr)
 
-GAF_FILE  <- "data/bm_ncbi_gene_ontology.gaf"
+source(here("R_scripts", "R", "project_paths.R"))
+
+GAF_FILE <- file.path(
+  EXTERNAL_DATA_DIR, "bm_ncbi",
+  "GCF_030269925.1-RS_2024_01_gene_ontology.gaf"
+)
 TAXID     <- 7091L          # Bombyx mori NCBI taxonomy ID
 GENUS     <- "Bombyx"
 SPECIES   <- "mori"
 VERSION   <- "0.3.0"    # R package version must be X.Y or X.Y.Z format
-PKG_DIR   <- "data"
+PKG_DIR   <- file.path(EXTERNAL_DATA_DIR, "bm_ncbi")
 
 # ---- 1. Parse GAF ----
 # Columns per GAF 2.2 spec (tab-separated, skip comment lines starting with !)
@@ -85,7 +91,7 @@ build_out <- system2("R", args = c("CMD", "build", "--no-build-vignettes", pkg_p
                      stdout = TRUE, stderr = TRUE)
 cat(build_out, sep = "\n")
 
-# Move tarball from cwd into data/
+# Move tarball from cwd into data/external/bm_ncbi/
 built <- list.files(".", pattern = paste0(pkg_name, "_.*\\.tar\\.gz"),
                     full.names = TRUE)
 if (length(built) > 0) {
@@ -119,8 +125,11 @@ test_res  <- AnnotationDbi::select(
 cat("Sample annotation:\n")
 print(head(test_res, 6))
 
-# Check coverage for our sig genes
-sig_df  <- read.table("data/output/sig_splicing_genes_annotated.tsv",
-                      header = TRUE, sep = "\t")
-matched <- sum(as.character(sig_df$gene_id) %in% keys(org.Bmori.eg.db, keytype = "GID"))
-cat("\nSig gene coverage:", matched, "/", nrow(sig_df), "\n")
+# Optional coverage check against an annotated gene table, if present
+sig_file <- file.path(PROCESSED_DATA_DIR, "sig_splicing_genes_annotated.tsv")
+if (file.exists(sig_file)) {
+  sig_df <- read.table(sig_file, header = TRUE, sep = "\t")
+  org_gids <- sub("\\.0$", "", keys(org.Bmori.eg.db, keytype = "GID"))
+  matched <- sum(as.character(sig_df$gene_id) %in% org_gids)
+  cat("\nSig gene coverage:", matched, "/", nrow(sig_df), "\n")
+}

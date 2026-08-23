@@ -108,9 +108,12 @@ snakemake -j 4 --use-conda
 
 ### R Downstream Analysis
 
-See [`R_scripts/README.md`](R_scripts/README.md) for full documentation.
+See [`R_scripts/README.md`](R_scripts/README.md) for full documentation. Run R scripts from the repository root.
 
 ```bash
+# DESeq2 GO/KEGG (SUGP1 vs Control, SUGP1 vs P200)
+Rscript R_scripts/04_deseq2_go_kegg_enrichment.R
+
 # Example: Build OrgDb → annotate splicing genes → enrichment analysis
 Rscript R_scripts/00_build_orgdb.R
 Rscript R_scripts/01_sig_splicing_annotate.R

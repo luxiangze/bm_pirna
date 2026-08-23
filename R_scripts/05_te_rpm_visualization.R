@@ -14,7 +14,7 @@ library(ggplot2)
 library(scales)
 
 # Define file paths
-DATA_DIR <- here("/home/gyk/project/bm_pirna")
+DATA_DIR <- here()
 TE_RPM_DIR <- file.path(DATA_DIR, "data/processed/sugp1_smRNA-seq_20260822/transposon_rpm")
 SAMPLE_MAP_FILE <- file.path(DATA_DIR, "data/external/sample_map.csv")
 OUTPUT_DIR <- file.path(DATA_DIR, "data/processed/sugp1_smRNA-seq_20260822/plots")
