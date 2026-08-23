@@ -1,7 +1,3 @@
----
-trigger: always_on
----
-
 ## 1. Language & Formatting
 
 - **Output**: Respond exclusively in Chinese.
