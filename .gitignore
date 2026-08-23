@@ -14,6 +14,8 @@ workflow/RNA-seq_workflow/*
 workflow/RNAdiff_workflow_ncbi_20260311/*
 !workflow/RNAdiff_workflow_ncbi_20260311/nf-params.json
 
+## Renv
+/renv/
 
 # Mac OS-specific storage files and temporary files
 .DS_Store

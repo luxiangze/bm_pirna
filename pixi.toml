@@ -6,7 +6,7 @@ channels = ["conda-forge", "bioconda"]
 platforms = ['linux-64']
 
 [dependencies]
-python = "3.12.*"
+python = ">=3.12,<3.13"
 loguru = ">=0.7.3,<0.8"
 ruff = "*"
 tqdm = ">=4.67.3,<5"
@@ -26,6 +26,7 @@ matplotlib = ">=3.10.8,<4"
 fastqc = ">=0.12.1,<0.13"
 pandas = ">=2.3.3,<3"
 subread = ">=2.0.6,<3"
+crispresso2 = ">=2.3.4,<3"
 
 [pypi-dependencies]
 python-dotenv = "*"
