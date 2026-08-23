@@ -34,7 +34,7 @@ def ensure_data_dirs() -> None:
 
 
 def download_file(remote_path: str, local_path: Path) -> bool:
-    """Download file from rustfs using mc.
+    """Download file from rustfs using rc.
 
     Args:
         remote_path: Remote path in rustfs (e.g., rustfs/bucket/path/file)
@@ -49,7 +49,7 @@ def download_file(remote_path: str, local_path: Path) -> bool:
         logger.info(f"  File already exists: {local_path}")
         return True
 
-    cmd = ["mc", "cp", remote_path, str(local_path)]
+    cmd = ["rc", "cp", remote_path, str(local_path)]
     logger.info(f"  Downloading: {remote_path}")
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
