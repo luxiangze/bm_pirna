@@ -3,6 +3,7 @@
 #' This script generates paired comparison plots for piRNA length distribution.
 #' Each pair from sample_map.csv generates a separate comparison plot.
 #' Reads are normalized using RPM (Reads Per Million) based on filtered_reads from filtered_read_counts.tsv.
+#' Per-sample and group-level length RPM tables are written as TSV files.
 #'
 #' @author Yongkang Guo
 #' @date 2025-01-23
@@ -69,28 +70,100 @@ calculate_rpm <- function(count, total_reads) {
   (count / total_reads) * 1e6
 }
 
-#' Process length distribution data with RPM normalization
+#' Compute per-sample length RPM
+#'
+#' RPM = count / filtered_reads * 1e6. Group names are derived by stripping
+#' the `_repX` suffix from sample IDs. Lengths in 24-35 nt that are absent
+#' from the input counts are filled with 0 so exported RPM tables are complete.
 #'
 #' @param data Data list from load_data()
-#' @return Processed data frame with mean ± SD RPM per group
-process_length_dist <- function(data) {
-  data$length_dist %>%
+#' @param length_min Minimum length (nt) to include
+#' @param length_max Maximum length (nt) to include
+#' @return Data frame with sample, length, count, filtered_reads, rpm, group_name
+compute_sample_rpm <- function(data, length_min = 24L, length_max = 35L) {
+  sample_rpm <- data$length_dist %>%
+    complete(
+      sample,
+      length = length_min:length_max,
+      fill = list(count = 0L)
+    ) %>%
+    filter(length >= length_min, length <= length_max) %>%
     left_join(
       data$filter_summary %>% select(sample, filtered_reads),
       by = "sample"
     ) %>%
     mutate(
       rpm = calculate_rpm(count, filtered_reads),
-      # Extract group name by removing _repX suffix
       group_name = str_replace(sample, "_rep\\d+$", "")
-    ) %>%
+    )
+
+  missing_lib <- sample_rpm %>%
+    filter(is.na(filtered_reads)) %>%
+    distinct(sample)
+  if (nrow(missing_lib) > 0) {
+    stop(
+      "Missing filtered_reads for sample(s): ",
+      paste(missing_lib$sample, collapse = ", ")
+    )
+  }
+
+  sample_rpm
+}
+
+#' Process length distribution data with RPM normalization
+#'
+#' @param sample_rpm Per-sample RPM data frame from compute_sample_rpm()
+#' @return Processed data frame with mean ± SD RPM per group
+process_length_dist <- function(sample_rpm) {
+  sample_rpm %>%
     group_by(group_name, length) %>%
     summarise(
       rpm_mean = mean(rpm, na.rm = TRUE),
       rpm_sd   = sd(rpm, na.rm = TRUE),
+      n        = n(),
       .groups  = "drop"
     ) %>%
     mutate(rpm_sd = replace_na(rpm_sd, 0))
+}
+
+#' Export per-sample and group-level length RPM tables
+#'
+#' Writes three TSV files:
+#' - pirna_length_rpm.tsv: per-sample RPM (long format)
+#' - pirna_length_rpm_matrix.tsv: length x sample RPM matrix
+#' - pirna_length_rpm_summary.tsv: group mean ± SD RPM used for plotting
+#'
+#' @param sample_rpm Per-sample RPM data frame from compute_sample_rpm()
+#' @param length_dist_df Group summary from process_length_dist()
+#' @param output_dir Output directory
+export_length_rpm <- function(sample_rpm, length_dist_df, output_dir) {
+  sample_tbl <- sample_rpm %>%
+    select(sample, group_name, length, count, filtered_reads, rpm) %>%
+    arrange(group_name, sample, length)
+  sample_file <- file.path(output_dir, "pirna_length_rpm.tsv")
+  write_tsv(sample_tbl, sample_file)
+  message(sprintf("  Saved per-sample RPM: %s (%d rows)", sample_file, nrow(sample_tbl)))
+
+  rpm_matrix <- sample_rpm %>%
+    select(length, sample, rpm) %>%
+    pivot_wider(names_from = sample, values_from = rpm, values_fill = 0) %>%
+    arrange(length)
+  matrix_file <- file.path(output_dir, "pirna_length_rpm_matrix.tsv")
+  write_tsv(rpm_matrix, matrix_file)
+  message(sprintf(
+    "  Saved RPM matrix: %s (%d lengths x %d samples)",
+    matrix_file, nrow(rpm_matrix), ncol(rpm_matrix) - 1
+  ))
+
+  summary_file <- file.path(output_dir, "pirna_length_rpm_summary.tsv")
+  write_tsv(
+    length_dist_df %>% arrange(group_name, length),
+    summary_file
+  )
+  message(sprintf(
+    "  Saved group RPM summary: %s (%d rows)",
+    summary_file, nrow(length_dist_df)
+  ))
 }
 
 #' Run a two-group Wilcoxon rank-sum / Mann-Whitney U test
@@ -129,15 +202,7 @@ run_two_group_test <- function(x, y) {
 #' @param control_group Control group name
 #' @param treated_group Treated group name
 print_significance_per_length <- function(data, control_group, treated_group) {
-  significance_results <- data$length_dist %>%
-    left_join(
-      data$filter_summary %>% select(sample, filtered_reads),
-      by = "sample"
-    ) %>%
-    mutate(
-      rpm = calculate_rpm(count, filtered_reads),
-      group_name = str_replace(sample, "_rep\\d+$", "")
-    ) %>%
+  significance_results <- compute_sample_rpm(data) %>%
     filter(group_name %in% c(control_group, treated_group)) %>%
     group_by(length) %>%
     summarise(
@@ -227,7 +292,9 @@ plot_length_group <- function(length_dist_df, control_group, treated_group) {
 #' @param data Data list from load_data()
 generate_all_plots <- function(data) {
   # Process data
-  length_dist_df <- process_length_dist(data)
+  sample_rpm <- compute_sample_rpm(data)
+  length_dist_df <- process_length_dist(sample_rpm)
+  export_length_rpm(sample_rpm, length_dist_df, OUTPUT_DIR)
 
   # Generate plot for each group pair in sample_map
   for (i in seq_len(nrow(data$sample_map))) {
