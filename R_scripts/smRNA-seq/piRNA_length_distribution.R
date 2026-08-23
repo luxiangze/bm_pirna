@@ -14,11 +14,11 @@ library(ggplot2)
 library(patchwork)
 
 # Define file paths
-DATA_DIR <- here("data")
-PIRNA_STATS_DIR <- file.path(DATA_DIR, "piRNA_mirna_merged_stats")
-SAMPLE_MAP_FILE <- here("data", "sample_map.csv")
-FILTER_SUMMARY_FILE <- file.path(DATA_DIR, "structure_np_miRNA_filtered_read_counts.tsv")
-OUTPUT_DIR <- here("graphs", "piRNA_mirna_merged_stats")
+DATA_DIR <- here("/home/gyk/project/bm_pirna")
+PIRNA_STATS_DIR <- file.path(DATA_DIR, "data/processed/sugp1_smRNA-seq_20260822/transposon_dedrived_pirna_stats")
+SAMPLE_MAP_FILE <- file.path(DATA_DIR, "data/external/sample_map.csv")
+FILTER_SUMMARY_FILE <- file.path(DATA_DIR, "data/interim/sugp1_smRNA-seq_20260822/structure_rna_filtered/filtered_read_counts.tsv")
+OUTPUT_DIR <- file.path(DATA_DIR, "data/processed/sugp1_smRNA-seq_20260822/plots")
 
 # Create output directory if not exists
 if (!dir.exists(OUTPUT_DIR)) {
@@ -93,6 +93,80 @@ process_length_dist <- function(data) {
     mutate(rpm_sd = replace_na(rpm_sd, 0))
 }
 
+#' Run a two-group Wilcoxon rank-sum / Mann-Whitney U test
+#'
+#' Uses non-missing replicate values only. Both groups require at least two
+#' replicates before the Wilcoxon rank-sum / Mann-Whitney U test is run.
+#'
+#' @param x Numeric values for the first group
+#' @param y Numeric values for the second group
+#' @return A tibble containing the P value and test method or status
+run_two_group_test <- function(x, y) {
+  x <- x[!is.na(x)]
+  y <- y[!is.na(y)]
+
+  if (length(x) < 2 || length(y) < 2) {
+    return(tibble(P_value = NA_real_, Method = "insufficient replicates"))
+  }
+
+  test_result <- tryCatch(
+    wilcox.test(x, y),
+    error = function(e) NULL
+  )
+
+  if (is.null(test_result)) {
+    return(tibble(P_value = NA_real_, Method = "test failed"))
+  }
+
+  tibble(P_value = test_result$p.value, Method = "Wilcoxon rank-sum")
+}
+
+#' Print per-length significance results for a group comparison
+#'
+#' P values are annotated as significance levels in the terminal output.
+#'
+#' @param data Data list from load_data()
+#' @param control_group Control group name
+#' @param treated_group Treated group name
+print_significance_per_length <- function(data, control_group, treated_group) {
+  significance_results <- data$length_dist %>%
+    left_join(
+      data$filter_summary %>% select(sample, filtered_reads),
+      by = "sample"
+    ) %>%
+    mutate(
+      rpm = calculate_rpm(count, filtered_reads),
+      group_name = str_replace(sample, "_rep\\d+$", "")
+    ) %>%
+    filter(group_name %in% c(control_group, treated_group)) %>%
+    group_by(length) %>%
+    summarise(
+      control_values = list(rpm[group_name == control_group]),
+      treated_values = list(rpm[group_name == treated_group]),
+      .groups = "drop"
+    ) %>%
+    rowwise() %>%
+    mutate(test_result = list(run_two_group_test(control_values, treated_values))) %>%
+    unnest_wider(test_result) %>%
+    mutate(
+      Significance = case_when(
+        is.na(P_value) ~ "NA",
+        P_value < 0.001 ~ "***",
+        P_value < 0.01 ~ "**",
+        P_value < 0.05 ~ "*",
+        TRUE ~ "ns"
+      )
+    ) %>%
+    select(length, P_value, Significance, Method)
+
+  message(sprintf(
+    "Significance per length: %s vs %s", control_group, treated_group
+  ))
+  print(significance_results)
+  # Print legend for significance symbols used in the table above
+  message("Significance levels: *** p < 0.001, ** p < 0.01, * p < 0.05, ns not significant, NA not testable.")
+}
+
 #' Plot piRNA length distribution for a group comparison with modern styling
 #'
 #' @param length_dist_df Full length distribution data (mean ± SD per group)
@@ -164,6 +238,7 @@ generate_all_plots <- function(data) {
     base_name <- str_to_lower(treated_group)
 
     message(sprintf("Generating plot for group: %s vs %s", control_group, treated_group))
+    print_significance_per_length(data, control_group, treated_group)
 
     # Create plot (all replicates in each group)
     p <- plot_length_group(length_dist_df, control_group, treated_group)
