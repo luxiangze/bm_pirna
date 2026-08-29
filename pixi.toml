@@ -27,6 +27,7 @@ fastqc = ">=0.12.1,<0.13"
 pandas = ">=2.3.3,<3"
 subread = ">=2.0.6,<3"
 crispresso2 = ">=2.3.4,<3"
+ncbi-datasets-cli = "==18.36.0"
 
 [pypi-dependencies]
 python-dotenv = "*"
