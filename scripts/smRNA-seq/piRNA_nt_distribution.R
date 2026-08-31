@@ -52,6 +52,14 @@ load_data <- function() {
 
   # Load sample map
   sample_map <- read_csv(SAMPLE_MAP_FILE, col_types = cols())
+  required_map_columns <- c("Control_sample", "Treated_sample")
+  missing_map_columns <- setdiff(required_map_columns, names(sample_map))
+  if (length(missing_map_columns) > 0) {
+    stop(
+      "Missing required sample map column(s): ",
+      paste(missing_map_columns, collapse = ", ")
+    )
+  }
 
   list(
     first_nt = first_nt,
@@ -60,16 +68,106 @@ load_data <- function() {
   )
 }
 
+#' Parse group names from a sample map cell
+#'
+#' Control_sample may contain multiple group names separated by semicolons
+#' (e.g. "control;p200"). Treated_sample must contain exactly one group.
+#'
+#' @param value Scalar sample map value
+#' @param column_name Column name used in validation messages
+#' @param allow_multiple Whether semicolon-separated values are allowed
+#' @return Character vector of validated group names
+parse_group_names <- function(value, column_name, allow_multiple = TRUE) {
+  if (length(value) != 1L || is.na(value)) {
+    stop(column_name, " must contain a non-missing group name.")
+  }
+
+  groups <- str_split(as.character(value), fixed(";"))[[1]] %>%
+    str_trim()
+
+  if (length(groups) == 0L || any(groups == "")) {
+    stop(column_name, " contains an empty group name.")
+  }
+  if (!allow_multiple && length(groups) != 1L) {
+    stop(column_name, " must contain exactly one group name.")
+  }
+
+  duplicate_groups <- unique(groups[duplicated(groups)])
+  if (length(duplicate_groups) > 0) {
+    stop(
+      column_name,
+      " contains duplicate group name(s): ",
+      paste(duplicate_groups, collapse = ", ")
+    )
+  }
+
+  groups
+}
+
+#' Validate that comparison groups exist in the available data
+#'
+#' @param control_groups Character vector of control group names
+#' @param treated_group Treated group name (scalar)
+#' @param available_groups Character vector of groups present in the data
+validate_comparison_groups <- function(
+    control_groups,
+    treated_group,
+    available_groups
+) {
+  if (treated_group %in% control_groups) {
+    stop("Treated group cannot also be listed as a control group: ", treated_group)
+  }
+
+  missing_groups <- setdiff(c(control_groups, treated_group), available_groups)
+  if (length(missing_groups) > 0) {
+    stop(
+      "Sample map group(s) not found in nucleotide distribution data: ",
+      paste(missing_groups, collapse = ", ")
+    )
+  }
+}
+
+#' Build a filesystem-safe slug from one or more group names
+#'
+#' Multiple group names are joined with "_and_" so that a combined control
+#' such as "control;p200" produces "control_and_p200" rather than a filename
+#' containing a semicolon.
+#'
+#' @param groups Character vector of group names
+#' @return Lowercase slug string safe for use in filenames
+make_group_slug <- function(groups) {
+  slug_parts <- groups %>%
+    str_to_lower() %>%
+    str_replace_all("[^[:alnum:]_.-]+", "_") %>%
+    str_replace_all("^_+|_+$", "")
+
+  if (any(slug_parts == "")) {
+    stop("Cannot create an output filename from an empty group name.")
+  }
+
+  paste(slug_parts, collapse = "_and_")
+}
+
 #' Process nucleotide distribution data for group comparison (calculate mean across replicates)
 #'
 #' @param nt_data Nucleotide distribution data frame
-#' @param control_group Control group name (e.g., "WT")
+#' @param control_groups Control group name(s); may be a vector when the
+#'   sample map lists multiple controls separated by semicolons
 #' @param treated_group Treated group name (e.g., "SUGP1")
 #' @return Processed data frame with mean values per group
-process_nt_group_data <- function(nt_data, control_group, treated_group) {
+process_nt_group_data <- function(nt_data, control_groups, treated_group) {
+  group_names <- c(control_groups, treated_group)
+  # Single control keeps the legacy "Control"/"Treated" axis labels; multiple
+  # controls fall back to the real group names so each control gets its own bar.
+  group_labels <- if (length(control_groups) == 1L) {
+    c("Control", "Treated")
+  } else {
+    group_names
+  }
+
   nt_data |>
     mutate(group_name = str_replace(sample, "_rep\\d+$", "")) |>
-    filter(group_name %in% c(control_group, treated_group)) |>
+    filter(group_name %in% group_names) |>
     # Recode T -> U for display (piRNA are RNA molecules)
     mutate(nucleotide = recode(nucleotide, "T" = "U")) |>
     # Normalize percentages to sum to 100% within each sample
@@ -80,11 +178,7 @@ process_nt_group_data <- function(nt_data, control_group, treated_group) {
     group_by(nucleotide, group_name) |>
     summarise(mean_percentage = mean(percentage), .groups = "drop") |>
     mutate(
-      group = case_when(
-        group_name == control_group ~ "Control",
-        group_name == treated_group ~ "Treated"
-      ),
-      group = factor(group, levels = c("Control", "Treated"))
+      group = factor(group_name, levels = group_names, labels = group_labels)
     )
 }
 
@@ -146,31 +240,48 @@ create_modern_plot <- function(first_data, tenth_data, treatment_name) {
 #'
 #' @param data Data list from load_data()
 generate_all_plots <- function(data) {
+  # Groups present in the nucleotide distribution data (replicate suffix stripped)
+  available_groups <- unique(str_replace(
+    c(data$first_nt$sample, data$tenth_nt$sample),
+    "_rep\\d+$",
+    ""
+  ))
+
   # Generate plot for each group pair in sample_map
   for (i in seq_len(nrow(data$sample_map))) {
-    control_group <- data$sample_map$Control_sample[i]
-    treated_group <- data$sample_map$Treated_sample[i]
+    control_groups <- parse_group_names(
+      data$sample_map$Control_sample[i],
+      sprintf("Control_sample in row %d", i)
+    )
+    treated_group <- parse_group_names(
+      data$sample_map$Treated_sample[i],
+      sprintf("Treated_sample in row %d", i),
+      allow_multiple = FALSE
+    )[[1]]
+
+    validate_comparison_groups(control_groups, treated_group, available_groups)
 
     # Treatment name (capitalize first letter)
     treatment_name <- paste0(toupper(substr(treated_group, 1, 1)), substr(treated_group, 2, nchar(treated_group)))
 
-    # Base filename (lowercase for consistency)
-    base_name <- str_to_lower(treated_group)
-    control_name <- str_to_lower(control_group)
+    # Filesystem-safe slugs (multi-control joined with "_and_")
+    treated_slug <- make_group_slug(treated_group)
+    control_slug <- make_group_slug(control_groups)
 
-    message(sprintf("Generating plots for group: %s vs %s", control_group, treated_group))
+    control_label <- paste(control_groups, collapse = ", ")
+    message(sprintf("Generating plots for group: %s vs %s", control_label, treated_group))
 
     # Process 1st nucleotide data (mean across replicates)
-    first_nt_group <- process_nt_group_data(data$first_nt, control_group, treated_group)
+    first_nt_group <- process_nt_group_data(data$first_nt, control_groups, treated_group)
 
     # Process 10th nucleotide data (mean across replicates)
-    tenth_nt_group <- process_nt_group_data(data$tenth_nt, control_group, treated_group)
+    tenth_nt_group <- process_nt_group_data(data$tenth_nt, control_groups, treated_group)
 
     # Create combined modern plot using patchwork
     p_combined <- create_modern_plot(first_nt_group, tenth_nt_group, treatment_name)
 
     # Save as PNG (300ppi)
-    png_file <- file.path(OUTPUT_DIR, sprintf("pirna_nt_distribution_%s_vs_%s_combined.png", base_name, control_name))
+    png_file <- file.path(OUTPUT_DIR, sprintf("pirna_nt_distribution_%s_vs_%s_combined.png", treated_slug, control_slug))
     ggsave(
       filename = png_file,
       plot = p_combined,
@@ -182,7 +293,7 @@ generate_all_plots <- function(data) {
     message(sprintf("  Saved PNG: %s", png_file))
 
     # Save as PDF (vector format)
-    pdf_file <- file.path(OUTPUT_DIR, sprintf("pirna_nt_distribution_%s_vs_%s_combined.pdf", base_name, control_name))
+    pdf_file <- file.path(OUTPUT_DIR, sprintf("pirna_nt_distribution_%s_vs_%s_combined.pdf", treated_slug, control_slug))
     ggsave(
       filename = pdf_file,
       plot = p_combined,
