@@ -3,6 +3,7 @@
 #         plus data/external/gene_info_table.tsv for NCBI GeneID mapping
 # Output: data/processed/sugp1_rnaseq_20260821/go_kegg/<contrast>/
 #         reports/figures/sugp1_rnaseq_20260821/go_kegg/<contrast>/
+# OrgDb:  installed package org.Bmori.eg.db (not the tar.gz)
 # KEGG organism code: bmor
 library(here)
 library(clusterProfiler)
