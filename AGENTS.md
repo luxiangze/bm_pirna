@@ -36,7 +36,7 @@ This repository follows [Cookiecutter Data Science](https://cookiecutter-data-sc
 |------|------|----------|
 | `data/raw/` | Original downloads (FASTQ, vendor dumps). Organized as `{dataset}/{assay}/`. Recorded in `data/raw/dataset.csv`. | No (treat as immutable) |
 | `data/interim/` | Intermediate files that are transformed but not analysis-ready (trimmed FASTQ, bowtie hits, QC intermediates). Date-stamp batches: `{experiment}_{YYYYMMDD}/`. | Yes, regenerable |
-| `data/processed/` | Analysis-ready tables and derived matrices (counts used by notebooks/R, enrichment TSVs, RPM tables). Same batch naming as interim. | Yes, regenerable |
+| `data/processed/` | Analysis-ready tables and derived matrices (enrichment TSVs, RPM tables). Same batch naming as interim. | Yes, regenerable |
 | `data/external/` | Third-party references that are not raw sequencing: GTF/GFF/GAF, gene info tables, TE libraries, OrgDb sources, sample maps. | Rarely; versioned by source |
 | `reports/` | Human-facing QC and pipeline reports (FastQC, MultiQC, cutadapt JSON). | Yes |
 | `reports/figures/` | Publication figures produced by R/Python. Mirror the processed batch name: `reports/figures/{experiment}_{YYYYMMDD}/`. | Yes |
@@ -51,7 +51,7 @@ This repository follows [Cookiecutter Data Science](https://cookiecutter-data-sc
 
 - Batch directories: `{experiment}_{YYYYMMDD}` (example: `sugp1_smRNA-seq_20260822`, `sugp1_rnaseq_20260821`).
 - One experiment = one batch folder under `interim/`, `processed/`, and `reports/` (and `reports/figures/` when plots are produced).
-- Workflow run directories keep the pipeline name and date (`workflow/bm_differentialabundance_20260821/`). Do not copy BAMs/FASTQs from `workflow/*/results` into `data/processed/`; copy or read only analysis-ready tables (count matrices, DESeq2 TSVs).
+- Workflow run directories keep the pipeline name and date (`workflow/bm_differentialabundance_20260821/`). Do not copy BAMs/FASTQs from `workflow/*/results` into `data/processed/`.
 
 ### Path rules for code
 
@@ -68,7 +68,7 @@ This repository follows [Cookiecutter Data Science](https://cookiecutter-data-sc
 ### Workflow vs analysis
 
 - nf-core / Snakemake *execution* stays under `workflow/<run>/` (`results/`, `work/`).
-- Downstream R/Python should read specific tables from `workflow/<run>/results/...` (document the path in the script header) and write derived products into `data/processed/` and `reports/figures/`.
+- Downstream R/Python should read tables from `workflow/<run>/results/...` (document the path in the script header) and write derived products into `data/processed/` and `reports/figures/`. Do not add extra analysis folders inside the workflow run.
 - Do not treat `workflow/*/work/` as input. It is a cache and may be deleted.
 
 ### What not to do
