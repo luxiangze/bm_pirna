@@ -4,6 +4,9 @@
 # reports
 /reports/
 
+# Runtime logs
+/logs/
+
 # workflow
 /workflow/*
 !workflow/rnasplicing/
