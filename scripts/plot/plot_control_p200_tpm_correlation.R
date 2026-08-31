@@ -1,0 +1,517 @@
+#!/usr/bin/env Rscript
+
+# Create a publication-oriented Control-P200 TPM correlation figure.
+# Run from the repository root with:
+# pixi run -e r Rscript scripts/plot/plot_control_p200_tpm_correlation.R
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(here)
+  library(patchwork)
+  library(ragg)
+  library(readr)
+  library(scales)
+  library(tidyr)
+})
+
+INPUT_RELATIVE <- file.path(
+  "workflow",
+  "bm_rnaseq-workflow_20260820",
+  "results",
+  "star_salmon",
+  "salmon.merged.gene_tpm.tsv"
+)
+OUTPUT_ROOT_RELATIVE <- file.path("reports", "figures")
+ANALYSIS_NAME <- "bm_rnaseq_control_p200_tpm_correlation"
+TIME_ZONE <- "Asia/Shanghai"
+
+CONTROL_SAMPLES <- paste0("Control_REP", 1:3)
+P200_SAMPLES <- paste0("P200_REP", 1:3)
+SAMPLE_COLUMNS <- c(CONTROL_SAMPLES, P200_SAMPLES)
+
+MIN_TPM <- 1
+MIN_SAMPLES <- 2
+HEATMAP_MIN <- 0.95
+FIGURE_WIDTH_MM <- 180
+FIGURE_HEIGHT_MM <- 110
+TIFF_DPI <- 600
+PREVIEW_DPI <- 300
+
+OKABE_ITO_BLUE <- "#0072B2"
+OKABE_ITO_VERMILLION <- "#D55E00"
+
+stop_with <- function(...) {
+  stop(..., call. = FALSE)
+}
+
+validate_input <- function(data, parse_issues) {
+  required_columns <- c("gene_id", "gene_name", SAMPLE_COLUMNS)
+  missing_columns <- setdiff(required_columns, names(data))
+
+  if (length(missing_columns) > 0L) {
+    stop_with("Missing required columns: ", paste(missing_columns, collapse = ", "))
+  }
+  if (nrow(parse_issues) > 0L) {
+    stop_with("The TPM table contains ", nrow(parse_issues), " parsing problem(s).")
+  }
+  if (anyNA(data$gene_id) || any(!nzchar(data$gene_id))) {
+    stop_with("gene_id contains missing or empty values.")
+  }
+  if (anyDuplicated(data$gene_id) > 0L) {
+    stop_with("gene_id contains duplicated values.")
+  }
+  if (anyNA(data$gene_name) || any(!nzchar(data$gene_name))) {
+    stop_with("gene_name contains missing or empty values.")
+  }
+
+  expression_matrix <- as.matrix(data[, SAMPLE_COLUMNS])
+  storage.mode(expression_matrix) <- "double"
+
+  if (anyNA(expression_matrix) || any(!is.finite(expression_matrix))) {
+    stop_with("The selected TPM matrix contains missing or non-finite values.")
+  }
+  if (any(expression_matrix < 0)) {
+    stop_with("The selected TPM matrix contains negative values.")
+  }
+
+  expression_matrix
+}
+
+validate_correlation_matrix <- function(correlation_matrix) {
+  expected_size <- length(SAMPLE_COLUMNS)
+
+  if (!identical(dim(correlation_matrix), c(expected_size, expected_size))) {
+    stop_with("The sample correlation matrix is not 6 x 6.")
+  }
+  if (any(!is.finite(correlation_matrix))) {
+    stop_with("The sample correlation matrix contains non-finite values.")
+  }
+  if (!isTRUE(all.equal(correlation_matrix, t(correlation_matrix), tolerance = 1e-12))) {
+    stop_with("The sample correlation matrix is not symmetric.")
+  }
+  if (!isTRUE(all.equal(
+    unname(diag(correlation_matrix)),
+    rep(1, expected_size),
+    tolerance = 1e-12
+  ))) {
+    stop_with("The sample correlation matrix diagonal is not equal to one.")
+  }
+}
+
+publication_theme <- function(base_size = 8) {
+  theme_classic(base_size = base_size, base_family = "sans") +
+    theme(
+      axis.text = element_text(color = "black"),
+      axis.title = element_text(color = "black", size = base_size),
+      plot.title = element_text(face = "bold", size = base_size + 1, hjust = 0),
+      plot.subtitle = element_text(color = "grey30", size = base_size - 0.5),
+      legend.title = element_text(size = base_size - 0.5),
+      legend.text = element_text(size = base_size - 1),
+      plot.margin = margin(4, 5, 4, 5)
+    )
+}
+
+make_heatmap <- function(correlation_matrix) {
+  sample_labels <- c(
+    Control_REP1 = "Control 1",
+    Control_REP2 = "Control 2",
+    Control_REP3 = "Control 3",
+    P200_REP1 = "P200 1",
+    P200_REP2 = "P200 2",
+    P200_REP3 = "P200 3"
+  )
+
+  heatmap_data <- as.data.frame(as.table(correlation_matrix), stringsAsFactors = FALSE) |>
+    rename(sample_y = Var1, sample_x = Var2, correlation = Freq) |>
+    mutate(
+      sample_x = factor(sample_x, levels = SAMPLE_COLUMNS),
+      sample_y = factor(sample_y, levels = rev(SAMPLE_COLUMNS)),
+      text_color = if_else(correlation >= 0.98, "white", "black")
+    )
+
+  ggplot(heatmap_data, aes(x = sample_x, y = sample_y, fill = correlation)) +
+    geom_tile(color = "white", linewidth = 0.35) +
+    geom_vline(xintercept = 3.5, color = "white", linewidth = 0.8) +
+    geom_hline(yintercept = 3.5, color = "white", linewidth = 0.8) +
+    geom_text(
+      aes(label = sprintf("%.3f", correlation), color = text_color),
+      size = 1.8,
+      show.legend = FALSE
+    ) +
+    scale_color_identity() +
+    scale_x_discrete(labels = sample_labels, expand = c(0, 0)) +
+    scale_y_discrete(labels = sample_labels, expand = c(0, 0)) +
+    scale_fill_gradientn(
+      colors = c("#F7FBFF", "#6BAED6", "#08306B"),
+      limits = c(HEATMAP_MIN, 1),
+      breaks = c(0.95, 0.975, 1),
+      labels = label_number(accuracy = 0.001),
+      oob = squish,
+      name = "Pearson r",
+      guide = guide_colorbar(
+        direction = "horizontal",
+        title.position = "top",
+        label.position = "bottom",
+        barwidth = grid::unit(38, "mm"),
+        barheight = grid::unit(3, "mm")
+      )
+    ) +
+    coord_fixed() +
+    labs(
+      title = "Sample correlation",
+      subtitle = expression(Pearson~r~on~log[2](TPM + 1)),
+      x = NULL,
+      y = NULL
+    ) +
+    publication_theme() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+      axis.ticks = element_blank(),
+      legend.position = "bottom",
+      legend.justification = "center"
+    )
+}
+
+make_scatter <- function(plot_data, pearson_r, spearman_rho) {
+  axis_limits <- range(
+    c(plot_data$control_log2_mean_tpm, plot_data$p200_log2_mean_tpm),
+    finite = TRUE
+  )
+  padding <- max(diff(axis_limits) * 0.03, 0.1)
+  axis_limits <- axis_limits + c(-padding, padding)
+  axis_span <- diff(axis_limits)
+
+  annotation <- sprintf(
+    "Pearson r = %.3f\nSpearman \u03c1 = %.3f\nn = %s genes",
+    pearson_r,
+    spearman_rho,
+    format(nrow(plot_data), big.mark = ",")
+  )
+
+  ggplot(
+    plot_data,
+    aes(x = control_log2_mean_tpm, y = p200_log2_mean_tpm)
+  ) +
+    geom_point(color = OKABE_ITO_BLUE, alpha = 0.22, size = 0.45) +
+    geom_abline(
+      slope = 1,
+      intercept = 0,
+      color = "grey35",
+      linewidth = 0.55,
+      linetype = "dashed"
+    ) +
+    geom_smooth(
+      method = "lm",
+      formula = y ~ x,
+      se = FALSE,
+      color = OKABE_ITO_VERMILLION,
+      linewidth = 0.85
+    ) +
+    annotate(
+      "label",
+      x = axis_limits[1] + 0.04 * axis_span,
+      y = axis_limits[2] - 0.04 * axis_span,
+      label = annotation,
+      hjust = 0,
+      vjust = 1,
+      size = 2.5,
+      family = "sans",
+      fill = "white",
+      color = "black",
+      label.padding = grid::unit(0.14, "lines"),
+      linewidth = 0.25
+    ) +
+    coord_equal(xlim = axis_limits, ylim = axis_limits, expand = FALSE) +
+    labs(
+      title = "Control-P200 expression concordance",
+      subtitle = "Solid line: OLS fit; dashed line: y = x",
+      x = expression(Control~log[2](mean~TPM + 1)),
+      y = expression(P200~log[2](mean~TPM + 1))
+    ) +
+    publication_theme() +
+    theme(
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.45)
+    )
+}
+
+write_manifest <- function(
+  path,
+  input_file,
+  output_relative,
+  run_timestamp,
+  created_at,
+  total_genes,
+  retained_genes,
+  pearson_r,
+  spearman_rho,
+  sample_correlation
+) {
+  packages <- c("dplyr", "ggplot2", "here", "patchwork", "ragg", "readr", "scales", "tidyr")
+  package_versions <- paste(
+    paste0(
+      packages,
+      "=",
+      vapply(packages, function(package) as.character(packageVersion(package)), character(1))
+    ),
+    collapse = ";"
+  )
+  off_diagonal_correlation <- sample_correlation[
+    row(sample_correlation) != col(sample_correlation)
+  ]
+
+  manifest <- tibble(
+    key = c(
+      "analysis_name",
+      "created_at",
+      "run_timestamp",
+      "time_zone",
+      "input_file",
+      "input_md5",
+      "output_directory",
+      "sample_order",
+      "control_samples",
+      "p200_samples",
+      "total_genes",
+      "retained_genes",
+      "filter_rule",
+      "sample_transform",
+      "group_mean_transform",
+      "sample_correlation_method",
+      "group_mean_pearson_r",
+      "group_mean_spearman_rho",
+      "sample_correlation_off_diagonal_min",
+      "sample_correlation_off_diagonal_max",
+      "heatmap_scale",
+      "figure_width_mm",
+      "figure_height_mm",
+      "tiff_dpi",
+      "tiff_compression",
+      "tiff_color_mode",
+      "preview_dpi",
+      "background",
+      "random_seed",
+      "r_version",
+      "package_versions",
+      "intended_use",
+      "limitation"
+    ),
+    value = c(
+      ANALYSIS_NAME,
+      created_at,
+      run_timestamp,
+      TIME_ZONE,
+      INPUT_RELATIVE,
+      unname(tools::md5sum(input_file)),
+      output_relative,
+      paste(SAMPLE_COLUMNS, collapse = ","),
+      paste(CONTROL_SAMPLES, collapse = ","),
+      paste(P200_SAMPLES, collapse = ","),
+      total_genes,
+      retained_genes,
+      sprintf("TPM >= %s in at least %d of %d selected samples", MIN_TPM, MIN_SAMPLES, length(SAMPLE_COLUMNS)),
+      "log2(TPM + 1)",
+      "log2(arithmetic mean TPM + 1)",
+      "Pearson",
+      sprintf("%.10f", pearson_r),
+      sprintf("%.10f", spearman_rho),
+      sprintf("%.10f", min(off_diagonal_correlation)),
+      sprintf("%.10f", max(off_diagonal_correlation)),
+      sprintf("fixed sequential scale from %.2f to 1.00; out-of-range values squished", HEATMAP_MIN),
+      FIGURE_WIDTH_MM,
+      FIGURE_HEIGHT_MM,
+      TIFF_DPI,
+      "LZW",
+      "RGB without alpha",
+      PREVIEW_DPI,
+      "opaque white",
+      "not applicable",
+      as.character(getRversion()),
+      package_versions,
+      "Exploratory expression concordance and sample-level correlation visualization",
+      "TPM correlation does not replace count-based VST QC or differential-expression analysis"
+    )
+  )
+
+  write_tsv(manifest, path)
+  invisible(run_timestamp)
+}
+
+main <- function() {
+  input_file <- here(INPUT_RELATIVE)
+  output_root <- here(OUTPUT_ROOT_RELATIVE)
+  run_time <- Sys.time()
+  run_timestamp <- format(run_time, "%Y%m%d_%H%M%S", tz = TIME_ZONE)
+  created_at <- format(run_time, "%Y-%m-%dT%H:%M:%S%z", tz = TIME_ZONE)
+  output_name <- paste(ANALYSIS_NAME, run_timestamp, sep = "_")
+  output_relative <- file.path(OUTPUT_ROOT_RELATIVE, output_name)
+  output_dir <- here(output_relative)
+
+  if (!file.exists(input_file)) {
+    stop_with("Input TPM table not found: ", INPUT_RELATIVE)
+  }
+  if (dir.exists(output_dir) || file.exists(output_dir)) {
+    stop_with("Output path already exists: ", output_relative)
+  }
+  if (!dir.exists(output_root) && !dir.create(output_root, recursive = TRUE)) {
+    stop_with("Could not create output root: ", OUTPUT_ROOT_RELATIVE)
+  }
+  if (!dir.create(output_dir, recursive = FALSE)) {
+    stop_with("Could not create timestamped output directory: ", output_relative)
+  }
+
+  column_spec <- cols(
+    gene_id = col_character(),
+    gene_name = col_character(),
+    Control_REP1 = col_double(),
+    Control_REP2 = col_double(),
+    Control_REP3 = col_double(),
+    P200_REP1 = col_double(),
+    P200_REP2 = col_double(),
+    P200_REP3 = col_double(),
+    .default = col_skip()
+  )
+  tpm <- read_tsv(
+    input_file,
+    col_types = column_spec,
+    na = c("", "NA"),
+    progress = FALSE,
+    show_col_types = FALSE
+  )
+  expression_matrix <- validate_input(tpm, problems(tpm))
+
+  keep <- rowSums(expression_matrix >= MIN_TPM) >= MIN_SAMPLES
+  if (sum(keep) < 2L) {
+    stop_with("Fewer than two genes remain after the expression filter.")
+  }
+
+  filtered_matrix <- expression_matrix[keep, , drop = FALSE]
+  log_matrix <- log2(filtered_matrix + 1)
+  sample_correlation <- cor(log_matrix, method = "pearson", use = "everything")
+  validate_correlation_matrix(sample_correlation)
+
+  control_mean_tpm <- rowMeans(filtered_matrix[, CONTROL_SAMPLES, drop = FALSE])
+  p200_mean_tpm <- rowMeans(filtered_matrix[, P200_SAMPLES, drop = FALSE])
+  plot_data <- tibble(
+    gene_id = tpm$gene_id[keep],
+    gene_name = tpm$gene_name[keep],
+    control_mean_tpm = control_mean_tpm,
+    p200_mean_tpm = p200_mean_tpm,
+    control_log2_mean_tpm = log2(control_mean_tpm + 1),
+    p200_log2_mean_tpm = log2(p200_mean_tpm + 1)
+  )
+
+  pearson_r <- cor(
+    plot_data$control_log2_mean_tpm,
+    plot_data$p200_log2_mean_tpm,
+    method = "pearson"
+  )
+  spearman_rho <- cor(
+    plot_data$control_log2_mean_tpm,
+    plot_data$p200_log2_mean_tpm,
+    method = "spearman"
+  )
+  if (any(!is.finite(c(pearson_r, spearman_rho)))) {
+    stop_with("The group-mean correlations are non-finite.")
+  }
+
+  heatmap_plot <- make_heatmap(sample_correlation)
+  scatter_plot <- make_scatter(plot_data, pearson_r, spearman_rho)
+  figure_caption <- sprintf(
+    paste0(
+      "Genes retained: TPM >= %s in at least %d/%d samples.\n",
+      "A: Pearson correlations on log2(TPM + 1). B: log2(mean TPM + 1); ",
+      "each point represents one gene."
+    ),
+    MIN_TPM,
+    MIN_SAMPLES,
+    length(SAMPLE_COLUMNS)
+  )
+  combined_plot <- (
+    heatmap_plot | scatter_plot
+  ) +
+    plot_layout(widths = c(1, 1.12)) +
+    plot_annotation(
+      tag_levels = "A",
+      caption = figure_caption,
+      theme = theme(
+        plot.tag = element_text(face = "bold", size = 10),
+        plot.caption = element_text(
+          size = 6.5,
+          hjust = 0,
+          color = "grey25",
+          lineheight = 1.05,
+          margin = margin(t = 3)
+        ),
+        plot.background = element_rect(fill = "white", color = NA)
+      )
+    )
+
+  output_base <- file.path(output_dir, "control_p200_tpm_correlation_combined")
+  ggsave(
+    paste0(output_base, ".pdf"),
+    plot = combined_plot,
+    device = grDevices::cairo_pdf,
+    width = FIGURE_WIDTH_MM,
+    height = FIGURE_HEIGHT_MM,
+    units = "mm",
+    bg = "white"
+  )
+  ggsave(
+    paste0(output_base, ".tiff"),
+    plot = combined_plot,
+    device = ragg::agg_tiff,
+    width = FIGURE_WIDTH_MM,
+    height = FIGURE_HEIGHT_MM,
+    units = "mm",
+    dpi = TIFF_DPI,
+    compression = "lzw",
+    background = "white"
+  )
+  ggsave(
+    file.path(output_dir, "control_p200_tpm_correlation_preview.png"),
+    plot = combined_plot,
+    device = ragg::agg_png,
+    width = FIGURE_WIDTH_MM,
+    height = FIGURE_HEIGHT_MM,
+    units = "mm",
+    dpi = PREVIEW_DPI,
+    background = "white"
+  )
+
+  correlation_output <- data.frame(
+    sample = rownames(sample_correlation),
+    sample_correlation,
+    check.names = FALSE
+  )
+  write_tsv(
+    correlation_output,
+    file.path(output_dir, "sample_pearson_correlation.tsv")
+  )
+  write_tsv(
+    plot_data,
+    file.path(output_dir, "control_p200_gene_mean_source_data.tsv")
+  )
+  write_manifest(
+    path = file.path(output_dir, "figure_manifest.tsv"),
+    input_file = input_file,
+    output_relative = output_relative,
+    run_timestamp = run_timestamp,
+    created_at = created_at,
+    total_genes = nrow(tpm),
+    retained_genes = nrow(plot_data),
+    pearson_r = pearson_r,
+    spearman_rho = spearman_rho,
+    sample_correlation = sample_correlation
+  )
+  writeLines(
+    capture.output(sessionInfo()),
+    con = file.path(output_dir, "session_info.txt")
+  )
+
+  message("Genes: ", nrow(tpm), " total; ", nrow(plot_data), " retained")
+  message(sprintf("Group means: Pearson r = %.4f; Spearman rho = %.4f", pearson_r, spearman_rho))
+  message("Output directory: ", output_relative)
+}
+
+main()
