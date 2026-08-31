@@ -7,6 +7,12 @@
 # Runtime logs
 /logs/
 
+# temporary files
+/tmp/
+
+# apptainer sif images
+*.sif
+
 # workflow
 /workflow/*
 !workflow/rnasplicing/
