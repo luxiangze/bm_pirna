@@ -314,97 +314,37 @@ print_significance_per_length <- function(data, control_group, treated_group) {
   message("Significance levels: *** p < 0.001, ** p < 0.01, * p < 0.05, ns not significant, NA not testable.")
 }
 
-#' Create deterministic colors, line types, and shapes
-#'
-#' @param control_groups Character vector of control group names
-#' @param treated_group Treated group name
-#' @return Named style vectors for all plotted groups
-create_group_styles <- function(control_groups, treated_group) {
-  group_names <- c(control_groups, treated_group)
-  base_control_colors <- c(
-    "#457B9D", "#F4A261", "#2A9D8F", "#6A4C93", "#E9C46A"
-  )
-
-  if (length(control_groups) <= length(base_control_colors)) {
-    control_colors <- base_control_colors[seq_along(control_groups)]
-  } else {
-    control_colors <- grDevices::hcl.colors(
-      length(control_groups), palette = "Dark 3"
-    )
-  }
-
-  control_linetypes <- rep(
-    c("solid", "longdash", "dotdash", "twodash"),
-    length.out = length(control_groups)
-  )
-  control_shapes <- rep(
-    c(16, 17, 18, 7, 8),
-    length.out = length(control_groups)
-  )
-
-  list(
-    colors = setNames(c(control_colors, "#E63946"), group_names),
-    linetypes = setNames(c(control_linetypes, "dashed"), group_names),
-    shapes = setNames(c(control_shapes, 15), group_names)
-  )
-}
-
 #' Plot piRNA length distribution for a group comparison with modern styling
 #'
 #' @param length_dist_df Full length distribution data (mean ± SD per group)
-#' @param control_groups Character vector of control group names
+#' @param control_group Control group name (e.g., "WT")
 #' @param treated_group Treated group name (e.g., "SUGP1")
 #' @return ggplot object
-plot_length_group <- function(length_dist_df, control_groups, treated_group) {
-  group_names <- c(control_groups, treated_group)
-  group_labels <- if (length(control_groups) == 1L) {
-    c("Control", "Treated")
-  } else {
-    group_names
-  }
-  group_styles <- create_group_styles(control_groups, treated_group)
-
+plot_length_group <- function(length_dist_df, control_group, treated_group) {
   plot_data <- length_dist_df %>%
-    filter(group_name %in% group_names) %>%
+    filter(group_name %in% c(control_group, treated_group)) %>%
     mutate(
-      group = factor(group_name, levels = group_names),
-      ribbon_ymin = pmax(0, rpm_mean - rpm_sd)
+      group = case_when(
+        group_name == control_group ~ "Control",
+        group_name == treated_group ~ "Treated"
+      ),
+      group = factor(group, levels = c("Control", "Treated"))
     )
 
-  ggplot(
-    plot_data,
-    aes(x = length, y = rpm_mean, color = group, fill = group, group = group)
-  ) +
+  color_palette <- c(
+    "Control" = "#457B9D",  # Steel Blue
+    "Treated" = "#E63946"   # Vivid Red
+  )
+
+  ggplot(plot_data, aes(x = length, y = rpm_mean, color = group, fill = group)) +
     geom_ribbon(
-      aes(ymin = ribbon_ymin, ymax = rpm_mean + rpm_sd),
+      aes(ymin = rpm_mean - rpm_sd, ymax = rpm_mean + rpm_sd),
       alpha = 0.2, color = NA
     ) +
-    geom_line(aes(linetype = group), linewidth = 1.2) +
-    geom_point(aes(shape = group), size = 3.5) +
-    scale_color_manual(
-      values = group_styles$colors,
-      breaks = group_names,
-      labels = group_labels,
-      name = NULL
-    ) +
-    scale_fill_manual(
-      values = group_styles$colors,
-      breaks = group_names,
-      labels = group_labels,
-      name = NULL
-    ) +
-    scale_linetype_manual(
-      values = group_styles$linetypes,
-      breaks = group_names,
-      labels = group_labels,
-      name = NULL
-    ) +
-    scale_shape_manual(
-      values = group_styles$shapes,
-      breaks = group_names,
-      labels = group_labels,
-      name = NULL
-    ) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 3.5, shape = 16) +
+    scale_color_manual(values = color_palette) +
+    scale_fill_manual(values = color_palette) +
     labs(
       x = "piRNA Length (nt)",
       y = "Normalized counts (RPM)"
@@ -438,51 +378,22 @@ generate_all_plots <- function(data) {
   length_dist_df <- process_length_dist(sample_rpm)
   export_length_rpm(sample_rpm, length_dist_df, OUTPUT_DIR)
 
-  available_groups <- unique(length_dist_df$group_name)
-
-  # Generate one plot for each comparison in the sample map
+  # Generate plot for each group pair in sample_map
   for (i in seq_len(nrow(data$sample_map))) {
-    control_groups <- parse_group_names(
-      data$sample_map$Control_sample[i],
-      sprintf("Control_sample in row %d", i)
-    )
-    treated_group <- parse_group_names(
-      data$sample_map$Treated_sample[i],
-      sprintf("Treated_sample in row %d", i),
-      allow_multiple = FALSE
-    )[[1]]
+    control_group <- data$sample_map$Control_sample[i]
+    treated_group <- data$sample_map$Treated_sample[i]
 
-    validate_comparison_groups(
-      control_groups,
-      treated_group,
-      available_groups
-    )
+    # Base filename (lowercase)
+    base_name <- str_to_lower(treated_group)
 
-    control_label <- paste(control_groups, collapse = ", ")
-    message(sprintf(
-      "Generating plot for groups: %s vs %s",
-      control_label,
-      treated_group
-    ))
+    message(sprintf("Generating plot for group: %s vs %s", control_group, treated_group))
+    print_significance_per_length(data, control_group, treated_group)
 
-    for (control_group in control_groups) {
-      print_significance_per_length(data, control_group, treated_group)
-    }
-
-    # Create plot using all replicates in each group
-    p <- plot_length_group(length_dist_df, control_groups, treated_group)
-    treated_slug <- make_group_slug(treated_group)
-    control_slug <- make_group_slug(control_groups)
+    # Create plot (all replicates in each group)
+    p <- plot_length_group(length_dist_df, control_group, treated_group)
 
     # Save as PNG (300ppi)
-    png_file <- file.path(
-      OUTPUT_DIR,
-      sprintf(
-        "pirna_length_distribution_%s_vs_%s.png",
-        treated_slug,
-        control_slug
-      )
-    )
+    png_file <- file.path(OUTPUT_DIR, sprintf("pirna_length_distribution_%s_vs_%s.png", base_name, str_to_lower(control_group)))
     ggsave(
       filename = png_file,
       plot = p,
@@ -494,14 +405,7 @@ generate_all_plots <- function(data) {
     message(sprintf("  Saved PNG: %s", png_file))
 
     # Save as PDF (vector format)
-    pdf_file <- file.path(
-      OUTPUT_DIR,
-      sprintf(
-        "pirna_length_distribution_%s_vs_%s.pdf",
-        treated_slug,
-        control_slug
-      )
-    )
+    pdf_file <- file.path(OUTPUT_DIR, sprintf("pirna_length_distribution_%s_vs_%s.pdf", base_name, str_to_lower(control_group)))
     ggsave(
       filename = pdf_file,
       plot = p,
