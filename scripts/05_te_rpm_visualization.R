@@ -22,11 +22,115 @@ OUTPUT_DIR <- file.path(DATA_DIR, "data/processed/sugp1_smRNA-seq_20260822/plots
 # Keep rows where max RPM across compared samples is at least this value
 RPM_THRESHOLD <- 1000
 
-# Condition color palette, matching piRNA length distribution plots
-COND_COLORS <- c(
-  "Control" = "#457B9D",
-  "Treated" = "#E63946"
-)
+#' Build the condition color palette for one comparison
+#'
+#' A single control keeps the legacy "Control"/"Treated" labels and the
+#' blue/red palette. When the sample map lists several controls separated by
+#' semicolons, each control receives its own color and the real group names
+#' are used as legend/facet labels so every control gets its own bar/facet.
+#'
+#' @param control_groups Character vector of control group names
+#' @param treated_group Treated group name (scalar)
+#' @return Named character vector mapping group label -> color
+create_cond_colors <- function(control_groups, treated_group) {
+  group_names <- c(control_groups, treated_group)
+  group_labels <- if (length(control_groups) == 1L) {
+    c("Control", "Treated")
+  } else {
+    group_names
+  }
+
+  base_control_colors <- c("#457B9D", "#F4A261", "#2A9D8F", "#6A4C93", "#E9C46A")
+  if (length(control_groups) <= length(base_control_colors)) {
+    control_colors <- base_control_colors[seq_along(control_groups)]
+  } else {
+    control_colors <- grDevices::hcl.colors(
+      length(control_groups), palette = "Dark 3"
+    )
+  }
+
+  setNames(c(control_colors, "#E63946"), group_labels)
+}
+
+#' Parse group names from a sample map cell
+#'
+#' Control_sample may contain multiple group names separated by semicolons
+#' (e.g. "control;p200"). Treated_sample must contain exactly one group.
+#'
+#' @param value Scalar sample map value
+#' @param column_name Column name used in validation messages
+#' @param allow_multiple Whether semicolon-separated values are allowed
+#' @return Character vector of validated group names
+parse_group_names <- function(value, column_name, allow_multiple = TRUE) {
+  if (length(value) != 1L || is.na(value)) {
+    stop(column_name, " must contain a non-missing group name.")
+  }
+
+  groups <- str_split(as.character(value), fixed(";"))[[1]] %>%
+    str_trim()
+
+  if (length(groups) == 0L || any(groups == "")) {
+    stop(column_name, " contains an empty group name.")
+  }
+  if (!allow_multiple && length(groups) != 1L) {
+    stop(column_name, " must contain exactly one group name.")
+  }
+
+  duplicate_groups <- unique(groups[duplicated(groups)])
+  if (length(duplicate_groups) > 0) {
+    stop(
+      column_name,
+      " contains duplicate group name(s): ",
+      paste(duplicate_groups, collapse = ", ")
+    )
+  }
+
+  groups
+}
+
+#' Validate that comparison groups exist in the available sample columns
+#'
+#' @param control_groups Character vector of control group names
+#' @param treated_group Treated group name (scalar)
+#' @param available_groups Character vector of groups present in the data
+validate_comparison_groups <- function(
+    control_groups,
+    treated_group,
+    available_groups
+) {
+  if (treated_group %in% control_groups) {
+    stop("Treated group cannot also be listed as a control group: ", treated_group)
+  }
+
+  missing_groups <- setdiff(c(control_groups, treated_group), available_groups)
+  if (length(missing_groups) > 0) {
+    stop(
+      "Sample map group(s) not found in TE RPM sample columns: ",
+      paste(missing_groups, collapse = ", ")
+    )
+  }
+}
+
+#' Build a filesystem-safe slug from one or more group names
+#'
+#' Multiple group names are joined with "_and_" so that a combined control
+#' such as "control;p200" produces "control_and_p200" rather than a filename
+#' containing a semicolon.
+#'
+#' @param groups Character vector of group names
+#' @return Lowercase slug string safe for use in filenames
+make_group_slug <- function(groups) {
+  slug_parts <- groups %>%
+    str_to_lower() %>%
+    str_replace_all("[^[:alnum:]_.-]+", "_") %>%
+    str_replace_all("^_+|_+$", "")
+
+  if (any(slug_parts == "")) {
+    stop("Cannot create an output filename from an empty group name.")
+  }
+
+  paste(slug_parts, collapse = "_and_")
+}
 
 # Create output directory if not exists
 if (!dir.exists(OUTPUT_DIR)) {
@@ -48,6 +152,14 @@ load_data <- function() {
   )
 
   sample_map <- read_csv(SAMPLE_MAP_FILE, col_types = cols())
+  required_map_columns <- c("Control_sample", "Treated_sample")
+  missing_map_columns <- setdiff(required_map_columns, names(sample_map))
+  if (length(missing_map_columns) > 0) {
+    stop(
+      "Missing required sample map column(s): ",
+      paste(missing_map_columns, collapse = ", ")
+    )
+  }
 
   list(
     top_class = top_class,
@@ -81,19 +193,26 @@ filter_by_max_rpm <- function(df, sample_cols, threshold = RPM_THRESHOLD) {
 #'
 #' @param df Filtered RPM matrix
 #' @param sample_cols Sample columns to pivot
-#' @param control_group Control group name
+#' @param control_groups Control group name(s); may be a vector when the
+#'   sample map lists multiple controls separated by semicolons
 #' @param treated_group Treated group name
 #' @return Long data frame with group and replicate labels
-to_long <- function(df, sample_cols, control_group, treated_group) {
+to_long <- function(df, sample_cols, control_groups, treated_group) {
+  group_names <- c(control_groups, treated_group)
+  # Single control keeps the legacy "Control"/"Treated" labels; multiple
+  # controls fall back to the real group names so each control is plotted
+  # as its own bar / facet.
+  group_labels <- if (length(control_groups) == 1L) {
+    c("Control", "Treated")
+  } else {
+    group_names
+  }
+
   df %>%
     pivot_longer(all_of(sample_cols), names_to = "sample", values_to = "rpm") %>%
     mutate(
       group_name = str_replace(sample, "_rep\\d+$", ""),
-      group = case_when(
-        group_name == control_group ~ "Control",
-        group_name == treated_group ~ "Treated"
-      ),
-      group = factor(group, levels = c("Control", "Treated")),
+      group = factor(group_name, levels = group_names, labels = group_labels),
       rep_label = factor(
         str_extract(sample, "rep\\d+$"),
         levels = unique(str_extract(sample_cols, "rep\\d+$"))
@@ -150,51 +269,64 @@ run_two_group_test <- function(x, y) {
 
 #' Print per-class significance results for a group comparison
 #'
+#' When multiple controls are supplied, each control is tested against the
+#' treated group independently (controls are never pooled).
+#'
 #' @param long_df Long-format RPM data for one pair
-#' @param control_group Control group name
-#' @param treated_group Treated group name
-print_significance_per_class <- function(long_df, control_group, treated_group) {
-  significance_results <- long_df %>%
-    group_by(te_class) %>%
-    summarise(
-      control_values = list(rpm[group == "Control"]),
-      treated_values = list(rpm[group == "Treated"]),
-      .groups = "drop"
-    ) %>%
-    rowwise() %>%
-    mutate(test_result = list(run_two_group_test(control_values, treated_values))) %>%
-    unnest_wider(test_result) %>%
-    mutate(
-      Significance = case_when(
-        is.na(P_value) ~ "NA",
-        P_value < 0.001 ~ "***",
-        P_value < 0.01 ~ "**",
-        P_value < 0.05 ~ "*",
-        TRUE ~ "ns"
-      )
-    ) %>%
-    select(te_class, P_value, Significance, Method)
+#' @param cond_colors Named color vector whose names are the group labels
+#'   (control label(s) first, treated label last)
+print_significance_per_class <- function(long_df, cond_colors) {
+  group_labels <- names(cond_colors)
+  control_labels <- head(group_labels, -1)
+  treated_label <- tail(group_labels, 1)
 
-  message(sprintf(
-    "Significance per class: %s vs %s", control_group, treated_group
-  ))
-  print(significance_results)
-  message("Significance levels: *** p < 0.001, ** p < 0.01, * p < 0.05, ns not significant, NA not testable.")
+  for (ctrl in control_labels) {
+    significance_results <- long_df %>%
+      group_by(te_class) %>%
+      summarise(
+        control_values = list(rpm[group == ctrl]),
+        treated_values = list(rpm[group == treated_label]),
+        .groups = "drop"
+      ) %>%
+      rowwise() %>%
+      mutate(test_result = list(run_two_group_test(control_values, treated_values))) %>%
+      unnest_wider(test_result) %>%
+      mutate(
+        Significance = case_when(
+          is.na(P_value) ~ "NA",
+          P_value < 0.001 ~ "***",
+          P_value < 0.01 ~ "**",
+          P_value < 0.05 ~ "*",
+          TRUE ~ "ns"
+        )
+      ) %>%
+      select(te_class, P_value, Significance, Method)
+
+    message(sprintf(
+      "Significance per class: %s vs %s", ctrl, treated_label
+    ))
+    print(significance_results)
+    message("Significance levels: *** p < 0.001, ** p < 0.01, * p < 0.05, ns not significant, NA not testable.")
+  }
 }
 
 #' Grouped bar chart of mean RPM with replicate points
 #'
 #' @param long_df Long-format RPM data
+#' @param cond_colors Named color vector (control label(s) first, treated last)
 #' @param y_scale_k If TRUE, y-axis labels use K units
 #' @param x_angle X-axis label rotation
 #' @return ggplot object
-plot_grouped_bar <- function(long_df, y_scale_k = TRUE, x_angle = 0) {
+plot_grouped_bar <- function(long_df, cond_colors, y_scale_k = TRUE, x_angle = 0) {
+  control_label <- names(cond_colors)[1]
+
   mean_df <- long_df %>%
     group_by(te_class, group) %>%
     summarise(mean_rpm = mean(rpm), .groups = "drop")
 
+  # Order classes by the first control's mean RPM (descending)
   class_order <- mean_df %>%
-    filter(group == "Control") %>%
+    filter(group == control_label) %>%
     arrange(desc(mean_rpm)) %>%
     pull(te_class)
 
@@ -220,7 +352,7 @@ plot_grouped_bar <- function(long_df, y_scale_k = TRUE, x_angle = 0) {
       alpha    = 0.95,
       show.legend = FALSE
     ) +
-    scale_fill_manual(values = COND_COLORS) +
+    scale_fill_manual(values = cond_colors) +
     labs(x = NULL, y = "Mean RPM", fill = NULL) +
     bar_theme(x_angle = x_angle)
 
@@ -236,20 +368,27 @@ plot_grouped_bar <- function(long_df, y_scale_k = TRUE, x_angle = 0) {
   p
 }
 
-#' Normalized bar chart (Control mean = 1 per class)
+#' Normalized bar chart (first Control mean = 1 per class)
+#'
+#' The first control acts as the reference. When multiple controls are
+#' supplied, every other control is also expressed relative to that same
+#' reference so all bars share one consistent baseline.
 #'
 #' @param long_df Long-format RPM data
+#' @param cond_colors Named color vector (control label(s) first, treated last)
 #' @param x_angle X-axis label rotation
 #' @param point_size Replicate point size
 #' @param base_size Theme base size
 #' @return ggplot object
-plot_normalized_bar <- function(long_df, x_angle = 0, point_size = 3, base_size = 20) {
+plot_normalized_bar <- function(long_df, cond_colors, x_angle = 0, point_size = 3, base_size = 20) {
+  control_label <- names(cond_colors)[1]
+
   mean_df <- long_df %>%
     group_by(te_class, group) %>%
     summarise(mean_rpm = mean(rpm), .groups = "drop")
 
   control_ref <- mean_df %>%
-    filter(group == "Control") %>%
+    filter(group == control_label) %>%
     select(te_class, control_mean = mean_rpm)
 
   class_order <- control_ref %>%
@@ -290,17 +429,21 @@ plot_normalized_bar <- function(long_df, x_angle = 0, point_size = 3, base_size 
       alpha    = 0.95,
       show.legend = FALSE
     ) +
-    scale_fill_manual(values = COND_COLORS) +
+    scale_fill_manual(values = cond_colors) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.06))) +
     labs(x = NULL, y = "Relative RPM (Control = 1)", fill = NULL) +
     bar_theme(base_size = base_size, x_angle = x_angle)
 }
 
-#' Sub-class heatmap faceted by Control / Treated
+#' Sub-class heatmap faceted by group (control(s) / treated)
 #'
 #' @param long_df Long-format RPM data
+#' @param cond_colors Named color vector used only to determine the reference
+#'   control label (the first name) for row ordering
 #' @return ggplot object
-plot_heatmap <- function(long_df) {
+plot_heatmap <- function(long_df, cond_colors) {
+  control_label <- names(cond_colors)[1]
+
   rpm_vals <- long_df$rpm
   pos_vals <- rpm_vals[rpm_vals > 0]
   log_mid <- if (length(pos_vals) > 0) {
@@ -310,7 +453,7 @@ plot_heatmap <- function(long_df) {
   }
 
   class_order <- long_df %>%
-    filter(group == "Control") %>%
+    filter(group == control_label) %>%
     group_by(te_class) %>%
     summarise(control_mean = mean(rpm), .groups = "drop") %>%
     arrange(control_mean) %>%
@@ -373,15 +516,15 @@ save_plot <- function(plot, filename, width, height) {
 #' Prepare long-format data for one matrix and one group pair
 #'
 #' @param matrix_df Top-class or sub-class RPM matrix
-#' @param control_group Control group name
+#' @param control_groups Control group name(s); may be a vector
 #' @param treated_group Treated group name
 #' @param label Label used in log messages
 #' @return Long data frame, or NULL if no rows / samples remain
-prepare_pair_data <- function(matrix_df, control_group, treated_group, label) {
-  sample_cols <- get_sample_cols(matrix_df, c(control_group, treated_group))
+prepare_pair_data <- function(matrix_df, control_groups, treated_group, label) {
+  sample_cols <- get_sample_cols(matrix_df, c(control_groups, treated_group))
   if (length(sample_cols) == 0) {
     message(sprintf("  No sample columns for %s vs %s in %s, skip",
-                    control_group, treated_group, label))
+                    paste(control_groups, collapse = ", "), treated_group, label))
     return(NULL)
   }
 
@@ -399,50 +542,52 @@ prepare_pair_data <- function(matrix_df, control_group, treated_group, label) {
     return(NULL)
   }
 
-  to_long(filtered, sample_cols, control_group, treated_group)
+  to_long(filtered, sample_cols, control_groups, treated_group)
 }
 
 #' Generate all plots for one Control / Treated pair
 #'
 #' @param data Data list from load_data()
-#' @param control_group Control group name
+#' @param control_groups Control group name(s); may be a vector
 #' @param treated_group Treated group name
-generate_pair_plots <- function(data, control_group, treated_group) {
-  base_name <- sprintf(
-    "%s_vs_%s", str_to_lower(treated_group), str_to_lower(control_group)
-  )
+generate_pair_plots <- function(data, control_groups, treated_group) {
+  cond_colors <- create_cond_colors(control_groups, treated_group)
+  treated_slug <- make_group_slug(treated_group)
+  control_slug <- make_group_slug(control_groups)
+  base_name <- sprintf("%s_vs_%s", treated_slug, control_slug)
 
-  message(sprintf("Generating plots for group: %s vs %s", control_group, treated_group))
+  control_label <- paste(control_groups, collapse = ", ")
+  message(sprintf("Generating plots for group: %s vs %s", control_label, treated_group))
 
   top_long <- prepare_pair_data(
-    data$top_class, control_group, treated_group, "te_top_class"
+    data$top_class, control_groups, treated_group, "te_top_class"
   )
   if (!is.null(top_long)) {
-    print_significance_per_class(top_long, control_group, treated_group)
+    print_significance_per_class(top_long, cond_colors)
     save_plot(
-      plot_grouped_bar(top_long),
+      plot_grouped_bar(top_long, cond_colors),
       sprintf("te_top_class_grouped_bar_%s", base_name),
       width = 8, height = 6
     )
     save_plot(
-      plot_normalized_bar(top_long),
+      plot_normalized_bar(top_long, cond_colors),
       sprintf("te_top_class_normalized_bar_%s", base_name),
       width = 8, height = 6
     )
   }
 
   sub_long <- prepare_pair_data(
-    data$sub_class, control_group, treated_group, "te_sub_class"
+    data$sub_class, control_groups, treated_group, "te_sub_class"
   )
   if (!is.null(sub_long)) {
-    print_significance_per_class(sub_long, control_group, treated_group)
+    print_significance_per_class(sub_long, cond_colors)
     save_plot(
-      plot_normalized_bar(sub_long, x_angle = 45, point_size = 2.5, base_size = 16),
+      plot_normalized_bar(sub_long, cond_colors, x_angle = 45, point_size = 2.5, base_size = 16),
       sprintf("te_sub_class_normalized_bar_%s", base_name),
       width = 12, height = 6
     )
     save_plot(
-      plot_heatmap(sub_long),
+      plot_heatmap(sub_long, cond_colors),
       sprintf("te_sub_class_heatmap_%s", base_name),
       width = 8, height = 5
     )
@@ -453,12 +598,25 @@ generate_pair_plots <- function(data, control_group, treated_group) {
 #'
 #' @param data Data list from load_data()
 generate_all_plots <- function(data) {
+  # Groups available across both RPM matrices (replicate suffix stripped)
+  available_groups <- unique(str_replace(
+    names(data$top_class)[-1], "_rep\\d+$", ""
+  ))
+
   for (i in seq_len(nrow(data$sample_map))) {
-    generate_pair_plots(
-      data,
+    control_groups <- parse_group_names(
       data$sample_map$Control_sample[i],
-      data$sample_map$Treated_sample[i]
+      sprintf("Control_sample in row %d", i)
     )
+    treated_group <- parse_group_names(
+      data$sample_map$Treated_sample[i],
+      sprintf("Treated_sample in row %d", i),
+      allow_multiple = FALSE
+    )[[1]]
+
+    validate_comparison_groups(control_groups, treated_group, available_groups)
+
+    generate_pair_plots(data, control_groups, treated_group)
   }
 
   message("All plots saved to ", OUTPUT_DIR)
